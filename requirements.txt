@@ -1,0 +1,39 @@
+# WSSIS — install after conda env (see environment.yml + scripts/setup)
+# PyTorch: installed via conda in environment.yml
+
+# Core
+numpy>=1.24
+scipy>=1.11
+Pillow>=10.0
+tqdm>=4.66
+PyYAML>=6.0
+matplotlib>=3.8
+opencv-python-headless>=4.8
+pandas>=2.0
+
+# COCO & vision
+pycocotools>=2.0.7
+scikit-image>=0.22
+timm>=0.9.12
+h5py>=3.10
+shapely>=2.0
+cython>=3.0
+
+# Experiment tracking
+tensorboard>=2.14
+wandb>=0.16
+
+# Kaggle downloads
+kaggle>=1.6
+
+# Stage-2 students
+ultralytics>=8.1
+
+# SAM (teacher)
+git+https://github.com/facebookresearch/segment-anything.git
+
+# Mask2Former / Detectron2 deps (detectron2 installed in setup script)
+submitit>=1.5
+
+# Optional: panoptic API for some Detectron2 datasets
+# git+https://github.com/cocodataset/panopticapi.git

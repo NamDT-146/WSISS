@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+.cursor/
+
+# Secrets
+data/kaggle.json
+**/kaggle.json
+.env
+.env.*
+
+# Large data & caches (keep structure via .gitkeep)
+data/coco2017/train2017/
+data/coco2017/val2017/
+data/coco2017/test2017/
+data/coco2017/annotations/
+data/downloads/
+data/cache/
+!data/cache/.gitkeep
+!data/splits/.gitkeep
+
+# Checkpoints & experiment outputs
+checkpoints/*.pth
+checkpoints/*.pt
+!checkpoints/.gitkeep
+outputs/
+!outputs/.gitkeep
+
+# Logs & debug
+*.log
+debug-*.log
+wandb/
+runs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Compiled CUDA ops (Mask2Former)
+modules/mask2former/mask2former/modeling/pixel_decoder/ops/build/
+
+# Submodule nested .git is kept; ignore only build artifacts
