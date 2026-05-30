@@ -62,6 +62,10 @@ def sam_vit_b_checkpoint() -> Path:
     return checkpoints_dir() / "sam_vit_b_01ec64.pth"
 
 
+def swin_tiny_checkpoint() -> Path:
+    return checkpoints_dir() / "swin_tiny_patch4_window7_224.pkl"
+
+
 def experiment_output_dir(exp_id: str) -> Path:
     d = outputs_dir() / "experiments" / exp_id
     d.mkdir(parents=True, exist_ok=True)

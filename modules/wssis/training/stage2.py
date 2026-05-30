@@ -24,6 +24,7 @@ from modules.wssis.paths import (
     gnn_checkpoint,
     repo_root,
     resolve_experiment_train_image_txt,
+    swin_tiny_checkpoint,
 )
 from modules.wssis.run_context import RunContext
 
@@ -94,25 +95,47 @@ def _check_mask2former_ops() -> None:
         ) from e
 
 
+def _mask2former_base_config(m2f_root: Path) -> Path:
+    preferred = (
+        m2f_root
+        / "configs"
+        / "coco"
+        / "instance-segmentation"
+        / "swin"
+        / "maskformer2_swin_tiny_bs16_50ep.yaml"
+    )
+    if preferred.exists():
+        return preferred
+    config_dir = m2f_root / "configs" / "coco" / "instance-segmentation"
+    candidates = sorted(config_dir.rglob("maskformer2_swin_tiny*.yaml"))
+    if candidates:
+        return candidates[0]
+    raise FileNotFoundError(
+        "Mask2Former Swin-T COCO instance config not found under "
+        f"{config_dir}. Expected maskformer2_swin_tiny_bs16_50ep.yaml"
+    )
+
+
+def _check_swin_weights() -> Path:
+    ckpt = swin_tiny_checkpoint()
+    if not ckpt.exists():
+        raise FileNotFoundError(
+            f"Missing Swin-T backbone weights: {ckpt}\n"
+            "Run: bash scripts/setup/04_download_swin_weights.sh"
+        )
+    return ckpt
+
+
 def _mask2former_train(spec: ExperimentSpec, out_dir: Path, dry_run: bool = False) -> None:
     m2f_root = repo_root() / "modules" / "mask2former"
     train_net = m2f_root / "train_net.py"
     if not train_net.exists():
         raise FileNotFoundError(f"Mask2Former not found at {train_net}")
 
-    # Base COCO instance config — user may swap for swin-tiny config in modules/mask2former/configs
-    config_dir = m2f_root / "configs" / "coco" / "instance-segmentation"
-    base_yaml = None
-    if config_dir.exists():
-        candidates = list(config_dir.rglob("mask2former_swin_tiny*.yaml"))
-        base_yaml = candidates[0] if candidates else None
-
-    if base_yaml is None:
-        base_yaml = m2f_root / "configs" / "coco" / "instance-segmentation" / "Base-COCO-InstanceSegmentation.yaml"
-        if not base_yaml.exists():
-            raise FileNotFoundError(
-                "No Mask2Former COCO config found. Add configs under modules/mask2former/configs/coco/"
-            )
+    base_yaml = _mask2former_base_config(m2f_root)
+    swin_weights = swin_tiny_checkpoint()
+    max_iter = spec.stage2_epochs * 1000
+    lr_steps = (int(max_iter * 0.7), int(max_iter * 0.9))
 
     generated = out_dir / "mask2former_override.yaml"
     split_txt = _split_file_for_spec(spec)
@@ -134,9 +157,12 @@ WSSIS:
 DATASETS:
   TRAIN: ("{train_ds}",)
   TEST: ("{val_ds}",)
+MODEL:
+  WEIGHTS: "{swin_weights.as_posix()}"
 OUTPUT_DIR: "{(out_dir / 'mask2former').as_posix()}"
 SOLVER:
-  MAX_ITER: {spec.stage2_epochs * 1000}
+  MAX_ITER: {max_iter}
+  STEPS: ({lr_steps[0]}, {lr_steps[1]})
 """,
         encoding="utf-8",
     )
@@ -165,6 +191,7 @@ SOLVER:
     print(" ".join(cmd))
     if dry_run:
         return
+    _check_swin_weights()
     _check_mask2former_ops()
     result = subprocess.run(cmd, cwd=str(m2f_root), env=env, check=False)
     if result.returncode != 0:
