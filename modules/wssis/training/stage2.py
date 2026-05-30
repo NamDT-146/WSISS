@@ -87,8 +87,10 @@ def _write_experiment_config(spec: ExperimentSpec, out_dir: Path, ctx: Optional[
 
 
 def _check_mask2former_ops() -> None:
+    from modules.wssis.mask2former_ops import verify_msda_import
+
     try:
-        import MultiScaleDeformableAttention  # noqa: F401
+        verify_msda_import()
     except ImportError as e:
         ops = repo_root() / "modules" / "mask2former" / "mask2former" / "modeling" / "pixel_decoder" / "ops"
         raise RuntimeError(

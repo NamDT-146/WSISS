@@ -414,7 +414,7 @@ wssis/
 | Detectron2 import error        | Re-run `00_create_conda_env.sh` or `pip install --no-build-isolation -e modules/detectron2` |
 | PyTorch / CUDA mismatch        | Reinstall with `WSSIS_PYTORCH_INDEX` + matching `WSSIS_TORCH_VERSION` env vars            |
 | Mask2Former config missing     | Add COCO configs under `modules/mask2former/configs/coco/` |
-| `MultiScaleDeformableAttention` not found | `bash scripts/setup/03_compile_mask2former_ops.sh` (needs CUDA + matching torch) |
+| `MultiScaleDeformableAttention` import error | `bash scripts/setup/03_compile_mask2former_ops.sh`; verify with `python -c "from modules.wssis.mask2former_ops import verify_msda_import; verify_msda_import()"` |
 | Experiments marked `done` but never trained | Edit `outputs/runs/<id>/progress.json` — remove `exp_*` / set `"status": "failed"` — then re-run without `--resume` or delete those keys |
 | `--parallel` used 5 GPUs on a 4-GPU node | Use `--parallel` (auto) or `--parallel 4`; scripts now clamp to visible GPU count |
 

@@ -67,20 +67,12 @@ RUN_ARGS=(--stage train --run-id "$RUN_ID")
 
 if [[ -z "$DRY_RUN" ]]; then
   if ! python - <<'PY'
-import sys
-try:
-    import MultiScaleDeformableAttention  # noqa: F401
-except ImportError:
-    print(
-        "ERROR: MultiScaleDeformableAttention not compiled.\n"
-        "Run: bash scripts/setup/03_compile_mask2former_ops.sh",
-        file=sys.stderr,
-    )
-    sys.exit(1)
+from modules.wssis.mask2former_ops import verify_msda_import
+verify_msda_import()
 print("MultiScaleDeformableAttention OK")
 PY
   then
-    echo "ERROR: compile Mask2Former ops before training (see above)." >&2
+    echo "ERROR: Mask2Former ops import failed (see above)." >&2
     exit 1
   fi
 fi

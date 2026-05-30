@@ -31,8 +31,9 @@ fi
 cd "$REPO_ROOT"
 echo "==> Verifying import"
 python - <<'PY'
-import MultiScaleDeformableAttention as MSDA
-print("MultiScaleDeformableAttention OK:", MSDA)
+from modules.wssis.mask2former_ops import verify_msda_import
+verify_msda_import()
+print("MultiScaleDeformableAttention OK")
 PY
 
 echo "Mask2Former ops ready."

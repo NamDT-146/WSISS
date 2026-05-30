@@ -111,7 +111,8 @@ python - <<'PY'
 import importlib
 for mod in ("torch", "detectron2", "segment_anything", "ultralytics", "modules.wssis"):
     importlib.import_module(mod)
-import MultiScaleDeformableAttention as MSDA
+from modules.wssis.mask2former_ops import verify_msda_import
+verify_msda_import()
 print("MultiScaleDeformableAttention OK")
 import torch
 print("torch", torch.__version__, "cuda", torch.cuda.is_available())
