@@ -276,7 +276,7 @@ See [scripts/CHECKLIST.md](scripts/CHECKLIST.md) §G for full list.
 
 ## Environment
 
-- Conda env: `wssis` (Python 3.10, PyTorch 2.1, CUDA 11.8)
+- Conda env: `wssis` (Python 3.10, PyTorch 2.6, CUDA 12.4 — see `requirements.txt`)
 - GPU: 1 GPU for SAM teacher inference; remaining GPUs for student (`WSSIS_NUM_GPUS`)
 - Kaggle API: `data/kaggle.json` for dataset download
 

@@ -9,7 +9,7 @@ Step-by-step guide to clone, set up conda, download data, run P0 prep, and execu
 
 | Requirement                | Notes                                              |
 | -------------------------- | -------------------------------------------------- |
-| Linux + NVIDIA GPU         | CUDA 11.8+ recommended                             |
+| Linux + NVIDIA GPU         | CUDA 12.4+ recommended (PyTorch cu124 wheels)      |
 | Conda (Miniconda/Anaconda) | For env `wssis`                                    |
 | Git                        | Clone this repo                                    |
 | Kaggle account             | API token → `data/kaggle.json`                     |
@@ -52,18 +52,23 @@ conda activate wssis
 
 This will:
 
-1. Create/update env `wssis` from `environment.yml`
-2. `pip install -r requirements.txt`
-3. Install Detectron2 (CUDA 11.8 / torch 2.1 wheel)
-4. Compile Mask2Former `MSDeformAttn` ops
-5. Download `checkpoints/sam_vit_b_01ec64.pth`
+1. Create/update env `wssis` from `environment.yml` (Python 3.10)
+2. Install PyTorch **2.6** + **cu124** wheels (default in setup script)
+3. `pip install -r requirements.txt`
+4. Install Detectron2 (prebuilt wheel when available, else editable `modules/detectron2`)
+5. Compile Mask2Former `MSDeformAttn` ops
+6. Download `checkpoints/sam_vit_b_01ec64.pth`
 
-**Manual fallback** if Detectron2 wheel fails:
+**Tested versions** (see `requirements.txt` header): torch `2.6.0+cu124`, torchvision `0.21.0+cu124`, detectron2 `0.6`, ultralytics `8.4.x`, `segment-anything` `1.0`.
+
+**Manual fallback** if Detectron2 build fails:
 
 ```bash
-pip install 'git+https://github.com/facebookresearch/detectron2.git'
+pip install --no-build-isolation -e modules/detectron2
 cd modules/mask2former/mask2former/modeling/pixel_decoder/ops && bash make.sh
 ```
+
+Override PyTorch CUDA index (e.g. cu118 node): `WSSIS_PYTORCH_INDEX=https://download.pytorch.org/whl/cu118 bash scripts/setup/00_create_conda_env.sh`
 
 ---
 
@@ -297,7 +302,8 @@ wssis/
 | `ModuleNotFoundError: modules` | `export PYTHONPATH=$PWD` from repo root                    |
 | Kaggle 403                     | Check `data/kaggle.json` permissions and API token         |
 | CUDA OOM on P0.2               | `--limit 100` for testing; reduce batch size               |
-| Detectron2 import error        | Re-run `00_create_conda_env.sh` or install matching wheel  |
+| Detectron2 import error        | Re-run `00_create_conda_env.sh` or `pip install --no-build-isolation -e modules/detectron2` |
+| PyTorch / CUDA mismatch        | Reinstall with `WSSIS_PYTORCH_INDEX` + matching `WSSIS_TORCH_VERSION` env vars            |
 | Mask2Former config missing     | Add COCO configs under `modules/mask2former/configs/coco/` |
 
 

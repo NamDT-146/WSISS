@@ -30,8 +30,8 @@ def compute_iou(pred: torch.Tensor, target: torch.Tensor, threshold: float = 0.5
     target_binary = (target > threshold).float()
     
     # Flatten
-    pred_flat = pred_binary.view(-1)
-    target_flat = target_binary.view(-1)
+    pred_flat = pred_binary.reshape(-1)
+    target_flat = target_binary.reshape(-1)
     
     intersection = (pred_flat * target_flat).sum().item()
     union = pred_flat.sum().item() + target_flat.sum().item() - intersection
@@ -63,8 +63,8 @@ def compute_dice(pred: torch.Tensor, target: torch.Tensor, threshold: float = 0.
     target_binary = (target > threshold).float()
     
     # Flatten
-    pred_flat = pred_binary.view(-1)
-    target_flat = target_binary.view(-1)
+    pred_flat = pred_binary.reshape(-1)
+    target_flat = target_binary.reshape(-1)
     
     intersection = (pred_flat * target_flat).sum().item()
     total = pred_flat.sum().item() + target_flat.sum().item()

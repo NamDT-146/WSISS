@@ -118,8 +118,8 @@ class DiceLoss(nn.Module):
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         pred = torch.sigmoid(pred)
-        pred_flat = pred.view(-1)
-        target_flat = target.view(-1)
+        pred_flat = pred.reshape(-1)
+        target_flat = target.reshape(-1)
         intersection = (pred_flat * target_flat).sum()
         union = pred_flat.sum() + target_flat.sum()
         dice = (2.0 * intersection + self.smooth) / (union + self.smooth)

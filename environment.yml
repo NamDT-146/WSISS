@@ -1,24 +1,14 @@
 # Conda environment for WSSIS (remote GPU machine)
 # Create:  bash scripts/setup/00_create_conda_env.sh
 # Activate: conda activate wssis
+#
+# PyTorch + CUDA are installed via pip in 00_create_conda_env.sh (cu124).
+# Tested stack: Python 3.10, torch 2.6.0+cu124, torchvision 0.21.0+cu124, detectron2 0.6
 
 name: wssis
 channels:
-  - pytorch
-  - nvidia
   - conda-forge
   - defaults
 dependencies:
   - python=3.10
   - pip
-  - numpy>=1.24
-  - scipy
-  - pyyaml
-  - matplotlib
-  - pandas
-  # PyTorch (adjust cuda version to match your driver)
-  - pytorch>=2.1
-  - torchvision>=0.16
-  - pytorch-cuda=11.8
-  - pip:
-    - -r requirements.txt

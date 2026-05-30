@@ -1,8 +1,13 @@
-# WSSIS — install after conda env (see environment.yml + scripts/setup)
-# PyTorch: installed via conda in environment.yml
+# WSSIS pip requirements
+# Install order: bash scripts/setup/00_create_conda_env.sh
+#   1) PyTorch (cu124) from PyTorch index
+#   2) This file
+#   3) Detectron2 (editable, modules/detectron2) + Mask2Former CUDA ops
+#
+# Tested: Python 3.10, torch 2.6.0+cu124, torchvision 0.21.0+cu124, detectron2 0.6
 
 # Core
-numpy>=1.24
+numpy>=1.24,<3
 scipy>=1.11
 Pillow>=10.0
 tqdm>=4.66
@@ -29,13 +34,22 @@ kaggle>=1.6
 # Hugging Face Hub (upload Exp 1C best weights)
 huggingface_hub>=0.20
 
-# Stage-2 students
+# Stage-2 students (installs opencv-python; headless above is preferred on servers)
 ultralytics>=8.1
 
-# SAM (teacher)
-git+https://github.com/facebookresearch/segment-anything.git
+# SAM (teacher) — PyPI release matches Meta segment_anything v1.0
+segment-anything>=1.0
 
-# Mask2Former / Detectron2 deps (detectron2 installed in setup script)
+# Detectron2 / Mask2Former (detectron2 itself: setup script, not this file)
+fvcore>=0.1.5,<0.1.6
+iopath>=0.1.7,<0.1.10
+omegaconf>=2.1,<2.4
+hydra-core>=1.1
+yacs>=0.1.8
+cloudpickle
+termcolor
+tabulate
+portalocker
 submitit>=1.5
 
 # Optional: panoptic API for some Detectron2 datasets
