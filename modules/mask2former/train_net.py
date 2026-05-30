@@ -4,12 +4,20 @@ MaskFormer Training Script.
 
 This script is a simplified version of the training script in detectron2/tools.
 """
+import warnings
+
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    message=r".*torch\.cuda\.amp\.(autocast|GradScaler).*",
+)
+
 try:
     # ignore ShapelyDeprecationWarning from fvcore
     from shapely.errors import ShapelyDeprecationWarning
-    import warnings
-    warnings.filterwarnings('ignore', category=ShapelyDeprecationWarning)
-except:
+
+    warnings.filterwarnings("ignore", category=ShapelyDeprecationWarning)
+except Exception:
     pass
 
 import copy
