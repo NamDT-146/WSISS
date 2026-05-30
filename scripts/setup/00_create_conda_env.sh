@@ -104,20 +104,15 @@ install_detectron2() {
 install_detectron2
 
 echo "==> Compiling Mask2Former MSDeformAttn ops"
-OPS_DIR="$REPO_ROOT/modules/mask2former/mask2former/modeling/pixel_decoder/ops"
-if [[ -d "$OPS_DIR" ]]; then
-  cd "$OPS_DIR"
-  if [[ -f make.sh ]]; then
-    bash make.sh || python setup.py build install
-  fi
-  cd "$REPO_ROOT"
-fi
+bash "$REPO_ROOT/scripts/setup/03_compile_mask2former_ops.sh"
 
 echo "==> Verifying imports"
 python - <<'PY'
 import importlib
 for mod in ("torch", "detectron2", "segment_anything", "ultralytics", "modules.wssis"):
     importlib.import_module(mod)
+import MultiScaleDeformableAttention as MSDA
+print("MultiScaleDeformableAttention OK")
 import torch
 print("torch", torch.__version__, "cuda", torch.cuda.is_available())
 import detectron2

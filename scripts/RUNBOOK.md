@@ -210,7 +210,7 @@ python -m modules.wssis.run_experiment --list
 | Phase | What | Command |
 | ----- | ---- | ------- |
 | **1. Prep** (once) | P0 + teacher AP | `bash scripts/prep/run_p0.sh --run-id $WSSIS_RUN_ID` |
-| **2. Train** | 1C on 5 GPUs, then 10 others @ 5 parallel | `bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID --parallel 5` |
+| **2. Train** | 1C on all GPUs, then 10 others @ N parallel | `bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID --parallel` |
 | **3. Eval** | Student AP batch | `bash scripts/eval/run_all_experiment_eval.sh --run-id $WSSIS_RUN_ID` |
 | **4. Report** | Re-run teacher only if GNN changed (Exp 2C) | `bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID --full-val --skip-if-done` |
 
@@ -265,40 +265,50 @@ Order: **1C → 1A → 1B → 1D → 2A → 2B → 2C → 3A → 3B → 3C → 4
 
 Outputs: `outputs/runs/<run_id>/experiments/<ID>/`
 
-### Run all experiments — 5 GPUs (recommended)
+### Run all experiments — multi-GPU (recommended)
 
-**Hybrid schedule:** Exp **1C** uses **all 5 GPUs** first (`WSSIS_NUM_GPUS=5`), then the remaining **10** experiments run on a **5-wide pool** (1 GPU each; next job starts when a slot frees).
+**Hybrid schedule:** Exp **1C** uses **all visible GPUs** first, then the remaining **10** experiments run on an **N-wide pool** (1 GPU each; N = auto-detected, typically 4).
 
 ```bash
 export WSSIS_RUN_ID=wssis_main
 
-# After P0 is done:
-bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID --parallel 5
-bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID --parallel 5 --resume
+# Auto-detect GPU count (e.g. 4 GPUs on your node):
+bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID --parallel
+
+# Or pin explicitly:
+bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID --parallel 4
+bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID --parallel --resume
 
 # Or directly:
-bash scripts/experiments/run_experiments_parallel.sh --jobs 5 --run-id $WSSIS_RUN_ID
+bash scripts/experiments/run_experiments_parallel.sh --run-id $WSSIS_RUN_ID
+bash scripts/experiments/run_experiments_parallel.sh --jobs 4 --run-id $WSSIS_RUN_ID
 ```
 
-| Phase | Experiments | GPUs |
-| ----- | ----------- | ---- |
-| **1** | **1C** (main result) | All 5 (`CUDA_VISIBLE_DEVICES=0,1,2,3,4`, `WSSIS_NUM_GPUS=5`) |
-| **2** | 1A 1B 1D 2A 2B → then 2C 3A 3B 3C 4A | 5 parallel × 1 GPU each |
+Override detection: `export WSSIS_GPU_COUNT=4`
+
+| Phase | Experiments | GPUs (example: 4-GPU node) |
+| ----- | ----------- | ---------------------------- |
+| **1** | **1C** (main result) | All 4 (`CUDA_VISIBLE_DEVICES=0,1,2,3`, `WSSIS_NUM_GPUS=4`) |
+| **2** | 1A 1B 1D 2A 2B → then 2C 3A 3B 3C 4A | 4 parallel × 1 GPU each |
 
 Logs: `outputs/runs/<id>/logs/parallel/` (`exp_1C.all_gpus.log`, `exp_*.gpuN.log`).
+
+**Before phase 2 / Exp 2C**, compile Mask2Former ops (once per env) and train the no-sym GNN:
+
+```bash
+bash scripts/setup/03_compile_mask2former_ops.sh
+
+python -m modules.wssis.prep.train_stage1_gnn --run-id $WSSIS_RUN_ID \
+  --symmetric-weight 0 --output-name gnn_refiner_no_sym.pt
+```
 
 To run all 11 in the pool without the 1C multi-GPU phase:
 
 ```bash
-bash scripts/experiments/run_experiments_parallel.sh --jobs 5 --no-main-first --run-id $WSSIS_RUN_ID
+bash scripts/experiments/run_experiments_parallel.sh --no-main-first --run-id $WSSIS_RUN_ID
 ```
 
-**Before Exp 2C** (phase 2), train the no-sym GNN once:
-
-```bash
-python -m modules.wssis.prep.train_stage1_gnn --run-id $WSSIS_RUN_ID \
-  --symmetric-weight 0 --output-name gnn_refiner_no_sym.pt
-```
+**If a run failed before Mask2Former ops were compiled**, remove false `done` entries from `outputs/runs/<id>/progress.json` (`exp_1C`, `exp_1A`, …) before `--resume`.
 
 ---
 
@@ -404,6 +414,9 @@ wssis/
 | Detectron2 import error        | Re-run `00_create_conda_env.sh` or `pip install --no-build-isolation -e modules/detectron2` |
 | PyTorch / CUDA mismatch        | Reinstall with `WSSIS_PYTORCH_INDEX` + matching `WSSIS_TORCH_VERSION` env vars            |
 | Mask2Former config missing     | Add COCO configs under `modules/mask2former/configs/coco/` |
+| `MultiScaleDeformableAttention` not found | `bash scripts/setup/03_compile_mask2former_ops.sh` (needs CUDA + matching torch) |
+| Experiments marked `done` but never trained | Edit `outputs/runs/<id>/progress.json` — remove `exp_*` / set `"status": "failed"` — then re-run without `--resume` or delete those keys |
+| `--parallel` used 5 GPUs on a 4-GPU node | Use `--parallel` (auto) or `--parallel 4`; scripts now clamp to visible GPU count |
 
 
 ---
@@ -418,8 +431,8 @@ export WSSIS_RUN_ID=wssis_main
 # 1) Setup + data + prep (teacher AP included at end of P0.4)
 bash scripts/prep/run_p0.sh --run-id $WSSIS_RUN_ID
 
-# 2) Train: 1C on all 5 GPUs, then 10 others @ 5 parallel
-bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID --parallel 5
+# 2) Train: 1C on all GPUs, then 10 others @ N parallel (auto-detect, e.g. 4)
+bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID --parallel
 
 # 3) Student eval batch (after all training)
 bash scripts/eval/run_all_experiment_eval.sh --run-id $WSSIS_RUN_ID

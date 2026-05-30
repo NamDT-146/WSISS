@@ -86,6 +86,18 @@ def _write_experiment_config(spec: ExperimentSpec, out_dir: Path, ctx: Optional[
     return path
 
 
+def _check_mask2former_ops() -> None:
+    try:
+        import MultiScaleDeformableAttention  # noqa: F401
+    except ImportError as e:
+        ops = repo_root() / "modules" / "mask2former" / "mask2former" / "modeling" / "pixel_decoder" / "ops"
+        raise RuntimeError(
+            "MultiScaleDeformableAttention is not compiled (required for Mask2Former).\n"
+            "Run: bash scripts/setup/03_compile_mask2former_ops.sh\n"
+            f"  (or: cd {ops} && bash make.sh)"
+        ) from e
+
+
 def _mask2former_train(spec: ExperimentSpec, out_dir: Path, dry_run: bool = False) -> None:
     m2f_root = repo_root() / "modules" / "mask2former"
     train_net = m2f_root / "train_net.py"
@@ -146,7 +158,13 @@ SOLVER:
     print(" ".join(cmd))
     if dry_run:
         return
-    subprocess.run(cmd, cwd=str(m2f_root), env=env, check=False)
+    _check_mask2former_ops()
+    result = subprocess.run(cmd, cwd=str(m2f_root), env=env, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Mask2Former training failed for experiment {spec.id} (exit {result.returncode}). "
+            "See log above; if import error, run: bash scripts/setup/03_compile_mask2former_ops.sh"
+        )
 
 
 def _yolo_train(spec: ExperimentSpec, out_dir: Path, dry_run: bool = False) -> None:

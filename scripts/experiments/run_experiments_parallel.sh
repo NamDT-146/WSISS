@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Hybrid Stage-2 training schedule:
-#   Phase 1 — Exp 1C on ALL GPUs (fastest path for main result)
+#   Phase 1 — Exp 1C on ALL visible GPUs (main result, fastest)
 #   Phase 2 — Remaining experiments on a 1-GPU-per-job worker pool
 #
+# GPU count: auto-detected (nvidia-smi / torch). Override with --jobs N or WSSIS_GPU_COUNT=4.
+#
 # Usage:
-#   bash scripts/experiments/run_experiments_parallel.sh --jobs 5 --run-id wssis_main
-#   bash scripts/experiments/run_experiments_parallel.sh --jobs 5 --run-id wssis_main --resume
-#   bash scripts/experiments/run_experiments_parallel.sh --jobs 5 --no-main-first   # all 11 in pool
+#   bash scripts/experiments/run_experiments_parallel.sh --run-id wssis_main
+#   bash scripts/experiments/run_experiments_parallel.sh --jobs 4 --run-id wssis_main --resume
+#   bash scripts/experiments/run_experiments_parallel.sh --no-main-first --run-id wssis_main
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -14,12 +16,14 @@ cd "$REPO_ROOT"
 
 # shellcheck source=scripts/lib/activate_wssis.sh
 source "$REPO_ROOT/scripts/lib/activate_wssis.sh"
+# shellcheck source=scripts/lib/detect_gpus.sh
+source "$REPO_ROOT/scripts/lib/detect_gpus.sh"
 activate_wssis
 
 export WSSIS_REPO_ROOT="$REPO_ROOT"
 export PYTHONPATH="$REPO_ROOT:${PYTHONPATH:-}"
 
-JOBS=5
+JOBS=""
 MAIN_EXP=1C
 MAIN_FIRST=true
 DRY_RUN=""
@@ -30,7 +34,7 @@ EXTRA=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --jobs=*) JOBS="${1#*=}"; shift ;;
-    --jobs) JOBS="${2:-5}"; shift 2 ;;
+    --jobs) JOBS="${2:-}"; shift 2 ;;
     --main-exp=*) MAIN_EXP="${1#*=}"; shift ;;
     --main-exp) MAIN_EXP="${2:-1C}"; shift 2 ;;
     --no-main-first) MAIN_FIRST=false; shift ;;
@@ -41,6 +45,12 @@ while [[ $# -gt 0 ]]; do
     *) EXTRA+=("$1"); shift ;;
   esac
 done
+
+if [[ -z "$JOBS" ]]; then
+  JOBS="$(wssis_detect_gpu_count)"
+  echo "[parallel] Auto-detected $JOBS GPU(s)"
+fi
+JOBS="$(wssis_clamp_jobs "$JOBS")"
 
 if (( JOBS < 1 )); then
   echo "ERROR: --jobs must be >= 1" >&2
@@ -54,6 +64,26 @@ mkdir -p "$LOG_DIR"
 RUN_ARGS=(--stage train --run-id "$RUN_ID")
 [[ -n "$RESUME" ]] && RUN_ARGS+=($RESUME)
 [[ -n "$DRY_RUN" ]] && RUN_ARGS+=($DRY_RUN)
+
+if [[ -z "$DRY_RUN" ]]; then
+  if ! python - <<'PY'
+import sys
+try:
+    import MultiScaleDeformableAttention  # noqa: F401
+except ImportError:
+    print(
+        "ERROR: MultiScaleDeformableAttention not compiled.\n"
+        "Run: bash scripts/setup/03_compile_mask2former_ops.sh",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+print("MultiScaleDeformableAttention OK")
+PY
+  then
+    echo "ERROR: compile Mask2Former ops before training (see above)." >&2
+    exit 1
+  fi
+fi
 
 gpu_list() {
   local n=$1 out="" i
@@ -136,11 +166,18 @@ run_parallel_queue() {
 if $MAIN_FIRST; then
   ALL_GPUS="$(gpu_list "$JOBS")"
   echo "========== Phase 1: Exp $MAIN_EXP on all $JOBS GPUs ($ALL_GPUS) =========="
+  set +e
   (
     export CUDA_VISIBLE_DEVICES="$ALL_GPUS"
     export WSSIS_NUM_GPUS="$JOBS"
     python -m modules.wssis.run_experiment --exp "$MAIN_EXP" "${RUN_ARGS[@]}" "${EXTRA[@]}"
   ) 2>&1 | tee "$LOG_DIR/exp_${MAIN_EXP}.all_gpus.log"
+  phase1_rc=${PIPESTATUS[0]}
+  set -e
+  if (( phase1_rc != 0 )); then
+    echo "ERROR: Phase 1 ($MAIN_EXP) failed (exit $phase1_rc). Fix before phase 2." >&2
+    exit "$phase1_rc"
+  fi
 
   echo "========== Phase 2: ${#PARALLEL_QUEUE[@]} experiments, $JOBS parallel (1 GPU each) =========="
   run_parallel_queue PARALLEL_QUEUE

@@ -95,7 +95,7 @@ Run after P0.4. **No extra manual labeling step** — uses fixed val prompts + o
 | ☐ | 4A | `run_exp_4a.py` | YOLOv8-seg | |
 
 Run all (train only): `bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID`
-Parallel (5 GPU): `bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID --parallel 5` (1C all GPUs → 10 others @ 5-wide)
+Parallel (auto GPU count): `bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID --parallel`
 Student eval batch: `bash scripts/eval/run_all_experiment_eval.sh --run-id $WSSIS_RUN_ID`
 
 **Student eval (Mask2Former):** COCO **AP, AP50, AP75, AP_S, AP_M, AP_L** on val — **student only, no teacher in loop**.

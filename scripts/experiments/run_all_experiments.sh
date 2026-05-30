@@ -8,9 +8,9 @@
 # Usage:
 #   bash scripts/experiments/run_all_experiments.sh --with-p0 --run-id wssis_main
 #   bash scripts/experiments/run_all_experiments.sh --run-id wssis_main --resume
-#   bash scripts/experiments/run_all_experiments.sh --run-id wssis_main --parallel 5
-#     → 1C on all 5 GPUs, then 10 others at 5-wide parallel
-#   bash scripts/experiments/run_all_experiments.sh --run-id wssis_main --with-eval
+#   bash scripts/experiments/run_all_experiments.sh --run-id wssis_main --parallel
+#     → auto-detect GPUs: 1C on all, then 10 others at N-wide parallel
+#   bash scripts/experiments/run_all_experiments.sh --run-id wssis_main --parallel 4
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -18,6 +18,8 @@ cd "$REPO_ROOT"
 
 # shellcheck source=scripts/lib/activate_wssis.sh
 source "$REPO_ROOT/scripts/lib/activate_wssis.sh"
+# shellcheck source=scripts/lib/detect_gpus.sh
+source "$REPO_ROOT/scripts/lib/detect_gpus.sh"
 activate_wssis
 
 export WSSIS_REPO_ROOT="$REPO_ROOT"
@@ -29,6 +31,7 @@ RESUME=""
 WITH_EVAL=false
 STAGE="train"
 PARALLEL=0
+PARALLEL_JOBS=""
 RUN_ID="${WSSIS_RUN_ID:-}"
 EXTRA_ARGS=()
 
@@ -40,8 +43,17 @@ while [[ $# -gt 0 ]]; do
     --with-eval) WITH_EVAL=true; shift ;;
     --stage=*) STAGE="${1#*=}"; shift ;;
     --stage) STAGE="${2:-train}"; shift 2 ;;
-    --parallel=*) PARALLEL="${1#*=}"; shift ;;
-    --parallel) PARALLEL="${2:-5}"; shift 2 ;;
+    --parallel=*) PARALLEL=1; PARALLEL_JOBS="${1#*=}"; shift ;;
+    --parallel)
+      PARALLEL=1
+      if [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]]; then
+        PARALLEL_JOBS="$2"
+        shift 2
+      else
+        PARALLEL_JOBS=""
+        shift
+      fi
+      ;;
     --run-id=*) RUN_ID="${1#*=}"; shift ;;
     --run-id) RUN_ID="${2:-}"; shift 2 ;;
     *) EXTRA_ARGS+=("$1"); shift ;;
@@ -61,7 +73,8 @@ if $RUN_P0; then
 fi
 
 if (( PARALLEL > 0 )); then
-  PAR_ARGS=(--jobs "$PARALLEL")
+  PAR_ARGS=()
+  [[ -n "$PARALLEL_JOBS" ]] && PAR_ARGS+=(--jobs "$PARALLEL_JOBS")
   [[ -n "$RUN_ID" ]] && PAR_ARGS+=(--run-id "$RUN_ID")
   [[ -n "$RESUME" ]] && PAR_ARGS+=($RESUME)
   [[ -n "$DRY_RUN" ]] && PAR_ARGS+=($DRY_RUN)
