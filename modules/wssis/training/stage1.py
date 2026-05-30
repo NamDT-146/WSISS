@@ -13,6 +13,7 @@ from typing import Dict, Optional
 
 import torch
 from tqdm import tqdm
+import numpy as np
 
 from modules.wssis.paths import checkpoints_dir, sam_vit_b_checkpoint
 from modules.wssis.run_context import EarlyStopping, RunContext, gpu_memory_mb
