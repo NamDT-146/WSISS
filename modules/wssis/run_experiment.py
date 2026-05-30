@@ -45,6 +45,11 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Eval stage: use full val_all (default: 20%% val subset for speed)",
     )
+    parser.add_argument(
+        "--with-teacher-eval",
+        action="store_true",
+        help="Eval stage: also run teacher AP (default off; run once after P0 via run_teacher_eval.sh)",
+    )
     args = parser.parse_args(argv)
 
     if args.list:
@@ -81,33 +86,55 @@ def main(argv: list[str] | None = None) -> None:
     for eid in ids:
         spec = get_experiment(eid)
         step_key = f"exp_{eid}"
-        if args.resume and ctx.is_step_done(step_key):
-            ctx.log("Skipping %s (done)", eid)
-            continue
+        eval_key = f"eval_{eid}"
+
+        train_done = ctx.is_step_done(step_key)
+        eval_done = ctx.is_step_done(eval_key)
+
+        if args.resume:
+            if args.stage == "train" and train_done:
+                ctx.log("Skipping train for %s (done)", eid)
+                continue
+            if args.stage == "eval" and eval_done:
+                ctx.log("Skipping eval for %s (done)", eid)
+                continue
+            if args.stage == "all" and train_done and eval_done:
+                ctx.log("Skipping %s (train + eval done)", eid)
+                continue
+
         if args.stage in ("train", "all"):
-            train_experiment(
-                spec,
-                dry_run=args.dry_run,
-                skip_p0_check=args.skip_p0_check,
-                run_ctx=RunContext(
-                    run_id=ctx.run_id,
-                    run_dir=ctx.root,
-                    task=f"exp_{eid}",
-                    experiment_id=eid,
-                ),
-            )
+            if args.resume and train_done:
+                ctx.log("Skipping train for %s (done)", eid)
+            else:
+                train_experiment(
+                    spec,
+                    dry_run=args.dry_run,
+                    skip_p0_check=args.skip_p0_check,
+                    run_ctx=RunContext(
+                        run_id=ctx.run_id,
+                        run_dir=ctx.root,
+                        task=f"exp_{eid}",
+                        experiment_id=eid,
+                    ),
+                )
         if args.stage in ("eval", "all"):
-            evaluate_experiment(
-                spec,
-                dry_run=args.dry_run,
-                run_ctx=RunContext(
-                    run_id=ctx.run_id,
-                    run_dir=ctx.root,
-                    task=f"eval_{eid}",
-                    experiment_id=eid,
-                ),
-                full_val=args.full_val,
-            )
+            if args.resume and eval_done:
+                ctx.log("Skipping eval for %s (done)", eid)
+            else:
+                evaluate_experiment(
+                    spec,
+                    dry_run=args.dry_run,
+                    run_ctx=RunContext(
+                        run_id=ctx.run_id,
+                        run_dir=ctx.root,
+                        task=eval_key,
+                        experiment_id=eid,
+                    ),
+                    full_val=args.full_val,
+                    with_teacher_eval=args.with_teacher_eval,
+                )
+                if not args.dry_run:
+                    ctx.update_step(eval_key, {"status": "done", "experiment_id": eid})
 
     ctx.finalize_report_bundle()
 

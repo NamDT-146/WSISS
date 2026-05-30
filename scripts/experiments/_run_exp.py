@@ -26,7 +26,7 @@ if __name__ == "__main__":
         args = args[1:]
 
     if "--stage" not in args:
-        args = ["--stage", "all", *args]
+        args = ["--stage", "train", *args]
 
     if "--run-id" not in args and os.environ.get("WSSIS_RUN_ID"):
         args = ["--run-id", os.environ["WSSIS_RUN_ID"], *args]

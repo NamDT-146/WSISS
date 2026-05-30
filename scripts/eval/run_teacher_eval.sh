@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Evaluate raw SAM + GNN-refined teacher on COCO val (AP primary metric).
-# Reports all weak-signal types: boxes_only, points_only, scribbles_only.
+# Run once after P0.4 (also automatic at end of Stage-1 unless --no-final-eval).
+#
+# Usage:
+#   bash scripts/eval/run_teacher_eval.sh --run-id wssis_main --full-val
+#   bash scripts/eval/run_teacher_eval.sh --run-id wssis_main --skip-if-done
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -21,6 +25,7 @@ while [[ $# -gt 0 ]]; do
     --run-id) RUN_ID="${2:-}"; shift 2 ;;
     --raw-only) EXTRA+=(--raw-only); shift ;;
     --full-val) EXTRA+=(--full-val); shift ;;
+    --skip-if-done) EXTRA+=(--skip-if-done); shift ;;
     *) EXTRA+=("$1"); shift ;;
   esac
 done
@@ -32,4 +37,5 @@ CMD+=("${EXTRA[@]}")
 echo "[eval] Teacher AP report: ${CMD[*]}"
 "${CMD[@]}"
 echo "[eval] Reports: outputs/runs/${RUN_ID:-<run>}/eval/teacher_val_report_*.json"
-echo "  (subset default; use --full-val for teacher_val_report_full.json)"
+echo "  full val: teacher_val_report_full.json (P0.4 default)"
+echo "  subset:   teacher_val_report_subset.json (--full-val omitted)"

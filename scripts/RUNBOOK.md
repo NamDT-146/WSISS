@@ -195,7 +195,9 @@ Stage-1 GNN now follows PLAN §2: SAM embed initializes graph nodes; inputs are 
 
 ---
 
-## Step 5 — Run experiments
+## Step 5 — Run experiments (train only; eval is separate)
+
+**Time-saving policy:** Teacher AP runs **once** during P0.4 (full val). Stage-2 sweeps **train only** by default — no repeated teacher eval per experiment.
 
 List experiments:
 
@@ -203,19 +205,21 @@ List experiments:
 python -m modules.wssis.run_experiment --list
 ```
 
+### Execution plan (recommended)
+
+| Phase | What | Command |
+| ----- | ---- | ------- |
+| **1. Prep** (once) | P0 + teacher AP | `bash scripts/prep/run_p0.sh --run-id $WSSIS_RUN_ID` |
+| **2. Train** | All 11 Stage-2 runs | See below (sequential or 5-GPU parallel) |
+| **3. Eval** | Student AP batch | `bash scripts/eval/run_all_experiment_eval.sh --run-id $WSSIS_RUN_ID` |
+| **4. Report** | Re-run teacher only if GNN changed (Exp 2C) | `bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID --full-val --skip-if-done` |
+
 ### Main result first (Exp 1C)
 
 ```bash
-python -m modules.wssis.run_experiment --exp 1C --run-id $WSSIS_RUN_ID
+python -m modules.wssis.run_experiment --exp 1C --stage train --run-id $WSSIS_RUN_ID
 # or
 python scripts/experiments/run_exp_1c.py
-```
-
-### Upload Exp 1C best weights to Hugging Face (demo)
-
-```bash
-huggingface-cli login
-python scripts/upload_exp_1c_hf.py --repo-id YOUR_USER/wssis-1c-demo --run-id $WSSIS_RUN_ID
 ```
 
 ### Single experiment
@@ -242,28 +246,93 @@ Dry-run (print commands only):
 python -m modules.wssis.run_experiment --exp 1C --stage train --dry-run
 ```
 
-### Run all experiments (PLAN order)
+### Run all experiments — sequential (PLAN order)
 
 ```bash
 export WSSIS_RUN_ID=wssis_main
+
+# First time: P0 + train all (no eval)
 bash scripts/experiments/run_all_experiments.sh --with-p0 --run-id $WSSIS_RUN_ID
-# resume after interrupt:
+
+# Resume training after interrupt (P0 skipped unless --with-p0)
 bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID --resume
+
+# Train + batch student eval at the end
+bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID --with-eval
 ```
 
 Order: **1C → 1A → 1B → 1D → 2A → 2B → 2C → 3A → 3B → 3C → 4A**
 
-Outputs: `outputs/runs/<run_id>/experiments/<ID>/` + `**outputs/runs/<run_id>/report/`** for upload
+Outputs: `outputs/runs/<run_id>/experiments/<ID>/`
+
+### Run all experiments — 5 GPUs in parallel
+
+One experiment per GPU; next queued experiment starts when a slot frees.
+
+```bash
+export WSSIS_RUN_ID=wssis_main
+
+# After P0 is done:
+bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID --parallel 5
+
+# Or directly:
+bash scripts/experiments/run_experiments_parallel.sh --jobs 5 --run-id $WSSIS_RUN_ID
+```
+
+Each worker sets `CUDA_VISIBLE_DEVICES=<slot>` and `WSSIS_NUM_GPUS=1`. Logs: `outputs/runs/<id>/logs/parallel/`.
+
+**Before Exp 2C in parallel**, train the no-sym GNN once:
+
+```bash
+python -m modules.wssis.prep.train_stage1_gnn --run-id $WSSIS_RUN_ID \
+  --symmetric-weight 0 --output-name gnn_refiner_no_sym.pt
+```
 
 ---
 
-## Step 6 — Logging & evaluation
+## Step 6 — Evaluation (after training)
 
-**Primary metric: COCO instance-segmentation mask AP.** IoU/Dice are auxiliary (GNN training only). Student eval uses full COCO AP, AP50, AP75, AP_S, AP_M, AP_L.
+**Primary metric: COCO instance-segmentation mask AP.** IoU/Dice are auxiliary (GNN training only).
 
 Progress tracker: **[CHECKLIST.md](CHECKLIST.md)**
 
-Log during training:
+### Teacher eval (once — not per experiment)
+
+Runs automatically at end of P0.4 → `eval/teacher_val_report_full.json`.
+
+Manual re-run only if GNN checkpoint changed:
+
+```bash
+bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID --full-val --skip-if-done
+```
+
+Reports AP/AP50 per signal type (`boxes_only`, `points_only`, `scribbles_only`) for `raw_sam` and `gnn_refined`.
+
+### Student eval (per experiment — batch after all training)
+
+Fast (20% val subset):
+
+```bash
+bash scripts/eval/run_all_experiment_eval.sh --run-id $WSSIS_RUN_ID
+# resume skips eval_* steps already done in progress.json:
+bash scripts/eval/run_all_experiment_eval.sh --run-id $WSSIS_RUN_ID --resume
+```
+
+Single experiment:
+
+```bash
+bash scripts/eval/run_experiment_eval.sh 1C --run-id $WSSIS_RUN_ID
+```
+
+Full val for report numbers:
+
+```bash
+bash scripts/eval/run_all_experiment_eval.sh --run-id $WSSIS_RUN_ID --full-val
+```
+
+Teacher eval is **not** run during student eval unless you explicitly pass `--with-teacher-eval` (rare).
+
+### Logging during training
 
 - `sup_loss`, `semi_loss`, `distill_loss` (Stage-2, when integrated)
 - GNN `sym_loss`, `partial_ce`, agreement rate
@@ -274,36 +343,6 @@ Use WandB (optional):
 ```bash
 export WANDB_PROJECT=wssis
 wandb login
-```
-
-### Teacher eval on val (raw SAM + GNN-refined, all 3 weak-signal types)
-
-Fast eval (20% val sample, default for experiment `--stage eval`):
-
-```bash
-bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID
-```
-
-Full val (reporting / final numbers):
-
-```bash
-bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID --full-val
-# or after P0.4 (automatic unless --no-final-eval):
-# outputs/runs/<id>/eval/teacher_val_report_full.json
-```
-# or:
-python -m modules.wssis.training.evaluate_teacher --run-id $WSSIS_RUN_ID
-```
-
-Output: `outputs/runs/<id>/eval/teacher_val_report.json` with AP/AP50 per signal type:
-`boxes_only`, `points_only`, `scribbles_only` for both `raw_sam` and `gnn_refined`.
-
-Weak-signal maps are 1×H×W tensors (stacked as 3 channels): point/scribble use Gaussian widening; box uses uniform fill inside bbox.
-
-Or via experiment runner:
-
-```bash
-python -m modules.wssis.run_experiment --exp 1C --stage eval --run-id $WSSIS_RUN_ID
 ```
 
 ---
@@ -329,6 +368,12 @@ wssis/
 ├── scripts/setup/
 ├── scripts/prep/
 ├── scripts/experiments/
+│   ├── run_all_experiments.sh
+│   └── run_experiments_parallel.sh
+├── scripts/eval/
+│   ├── run_teacher_eval.sh
+│   ├── run_experiment_eval.sh
+│   └── run_all_experiment_eval.sh
 ├── environment.yml
 └── requirements.txt
 ```
@@ -358,12 +403,16 @@ conda activate wssis
 export WSSIS_REPO_ROOT=$(pwd) PYTHONPATH=$(pwd)
 export WSSIS_RUN_ID=wssis_main
 
-bash scripts/setup/00_create_conda_env.sh
-cp ~/.kaggle/kaggle.json data/kaggle.json
-bash scripts/setup/01_download_data.sh
+# 1) Setup + data + prep (teacher AP included at end of P0.4)
 bash scripts/prep/run_p0.sh --run-id $WSSIS_RUN_ID
-bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID
-python -m modules.wssis.run_experiment --exp 1C --run-id $WSSIS_RUN_ID --stage all
+
+# 2) Train all experiments (pick one)
+bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID --parallel 5   # 5 GPUs
+# bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID              # 1 GPU, sequential
+
+# 3) Student eval batch (after all training)
+bash scripts/eval/run_all_experiment_eval.sh --run-id $WSSIS_RUN_ID
+
 # zip outputs/runs/$WSSIS_RUN_ID/report/ for submission
 # Full checklist: scripts/CHECKLIST.md
 ```

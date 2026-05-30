@@ -222,28 +222,33 @@ def evaluate_experiment(
     run_ctx: Optional[RunContext] = None,
     *,
     full_val: bool = False,
+    with_teacher_eval: bool = False,
 ) -> None:
     out_dir = experiment_output_dir(spec.id)
     print(f"[eval] Experiment {spec.id} — outputs at {out_dir}")
 
     if dry_run:
-        print("[eval] Would run: teacher val report (raw SAM + GNN) + student Mask2Former COCO AP")
+        msg = "[eval] Would run: student Mask2Former COCO AP"
+        if with_teacher_eval:
+            msg += " + teacher val report (use scripts/eval/run_teacher_eval.sh instead)"
+        print(msg)
         return
 
-    from modules.wssis.training.evaluate_teacher import evaluate_teacher_on_val
-
     ctx = run_ctx or RunContext(task=f"eval_{spec.id}", experiment_id=spec.id)
-    gnn_ckpt = gnn_checkpoint(spec.gnn_checkpoint) if spec.use_gnn else None
-    modes = ("raw_sam", "gnn_refined") if spec.use_gnn else ("raw_sam",)
 
-    scope = "full val_all" if full_val else "val_sample_20pct (fast)"
-    print(f"[eval] Teacher baseline on {scope}, all weak-signal types...")
-    evaluate_teacher_on_val(
-        gnn_ckpt=gnn_ckpt,
-        run_ctx=ctx,
-        modes=modes,
-        full_val=full_val,
-    )
+    if with_teacher_eval:
+        from modules.wssis.training.evaluate_teacher import evaluate_teacher_on_val
+
+        gnn_ckpt = gnn_checkpoint(spec.gnn_checkpoint) if spec.use_gnn else None
+        modes = ("raw_sam", "gnn_refined") if spec.use_gnn else ("raw_sam",)
+        scope = "full val_all" if full_val else "val_sample_20pct (fast)"
+        print(f"[eval] Teacher baseline on {scope} (--with-teacher-eval)...")
+        evaluate_teacher_on_val(
+            gnn_ckpt=gnn_ckpt,
+            run_ctx=ctx,
+            modes=modes,
+            full_val=full_val,
+        )
 
     print(
         "[eval] Student Mask2Former COCO AP — run train_net.py --eval-only on "

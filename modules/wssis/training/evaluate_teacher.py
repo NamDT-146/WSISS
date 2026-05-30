@@ -104,6 +104,7 @@ def evaluate_teacher_on_val(
     *,
     full_val: bool = False,
     use_labeled_5pct_holdout: bool = False,
+    skip_if_done: bool = False,
 ) -> Dict:
     """
     Run val-set eval for raw SAM and/or GNN-refined teacher across all weak-signal types.
@@ -126,6 +127,17 @@ def evaluate_teacher_on_val(
         full_val=full_val,
         use_labeled_5pct_holdout=use_labeled_5pct_holdout,
     )
+    ctx = run_ctx or RunContext(task="teacher_eval")
+    report_name = eval_report_name(val_spec["scope"])
+    out_path = ctx.eval_dir / report_name
+    step_key = f"teacher_eval_{val_spec['scope']}"
+
+    if skip_if_done and out_path.exists():
+        ctx.log("Skipping teacher eval (%s exists)", out_path)
+        if not ctx.is_step_done(step_key):
+            ctx.update_step(step_key, {"status": "done", "report": str(out_path), "skipped": True})
+        return json.loads(out_path.read_text(encoding="utf-8"))
+
     mask_size = 256
     img_size = 1024
 
@@ -236,10 +248,8 @@ def evaluate_teacher_on_val(
         "results": results,
     }
 
-    ctx = run_ctx or RunContext(task="teacher_eval")
-    report_name = eval_report_name(val_spec["scope"])
-    out_path = ctx.eval_dir / report_name
     out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    ctx.update_step(step_key, {"status": "done", "report": str(out_path)})
     ctx.log("Teacher eval report -> %s", out_path)
     for mode, by_sig in results.items():
         for sig, m in by_sig.items():
@@ -281,6 +291,11 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Evaluate on labeled_5pct_val holdout only",
     )
+    parser.add_argument(
+        "--skip-if-done",
+        action="store_true",
+        help="Skip when report JSON already exists in the run eval dir",
+    )
     args = parser.parse_args(argv)
 
     ctx = RunContext(run_id=args.run_id, run_dir=args.run_dir, task="teacher_eval")
@@ -296,6 +311,7 @@ def main(argv: list[str] | None = None) -> None:
         modes=modes,
         full_val=args.full_val,
         use_labeled_5pct_holdout=args.stage1_holdout,
+        skip_if_done=args.skip_if_done,
     )
 
 

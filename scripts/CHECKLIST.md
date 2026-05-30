@@ -56,7 +56,8 @@ Run after P0.4. **No extra manual labeling step** — uses fixed val prompts + o
 |------|------|---------|--------|
 | ☐ | Raw SAM AP (3 signal types) | `bash scripts/eval/run_teacher_eval.sh --run-id $ID --raw-only` | `eval/teacher_val_report.json` → `results.raw_sam.*` |
 | ☐ | GNN-refined AP (3 signal types) | `bash scripts/eval/run_teacher_eval.sh --run-id $ID` | `results.gnn_refined.*` with **ΔAP** |
-| ☐ | Per-experiment eval hook | `bash scripts/eval/run_experiment_eval.sh 1C --run-id $ID` | same + student eval note |
+| ☐ | Per-experiment student eval | `bash scripts/eval/run_experiment_eval.sh 1C --run-id $ID` | student AP hook |
+| ☐ | Batch student eval (all exps) | `bash scripts/eval/run_all_experiment_eval.sh --run-id $ID` | after training sweep |
 
 **Signal types reported:** `boxes_only`, `points_only`, `scribbles_only`
 
@@ -93,7 +94,9 @@ Run after P0.4. **No extra manual labeling step** — uses fixed val prompts + o
 | ☐ | 3C | `run_exp_3c.py` | Mixed signals | |
 | ☐ | 4A | `run_exp_4a.py` | YOLOv8-seg | |
 
-Run all: `bash scripts/experiments/run_all_experiments.sh --with-p0 --run-id $WSSIS_RUN_ID`
+Run all (train only): `bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID`
+Parallel (5 GPU): `bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID --parallel 5`
+Student eval batch: `bash scripts/eval/run_all_experiment_eval.sh --run-id $WSSIS_RUN_ID`
 
 **Student eval (Mask2Former):** COCO **AP, AP50, AP75, AP_S, AP_M, AP_L** on val — **student only, no teacher in loop**.
 
@@ -154,10 +157,8 @@ conda activate wssis
 export WSSIS_REPO_ROOT=$PWD PYTHONPATH=$PWD WSSIS_RUN_ID=wssis_main
 
 bash scripts/prep/run_p0.sh --run-id $WSSIS_RUN_ID
-bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID
-
-python scripts/experiments/run_exp_1c.py --run-id $WSSIS_RUN_ID
-bash scripts/eval/run_experiment_eval.sh 1C --run-id $WSSIS_RUN_ID
+bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID --parallel 5
+bash scripts/eval/run_all_experiment_eval.sh --run-id $WSSIS_RUN_ID
 
 # zip for report
 # outputs/runs/$WSSIS_RUN_ID/report/
