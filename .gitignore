@@ -30,10 +30,12 @@ data/coco2017/train2017/
 data/coco2017/val2017/
 data/coco2017/test2017/
 data/coco2017/annotations/
+data/
 data/downloads/
 data/cache/
 !data/cache/.gitkeep
 !data/splits/.gitkeep
+data/coco_minitrain_10k/
 
 # Checkpoints & experiment outputs
 checkpoints/*.pth
