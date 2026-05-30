@@ -30,11 +30,13 @@ def _build_config(
             "num_workers": 4,
             "max_instances": max_instances,
             "coco_root": str(paths["coco_root"]),
-            # Supervised Stage-1 only: ~5% of coco-minitrain-10k train images (P0.1 seed=42)
-            "train_split": "labeled_5pct",
-            "train_image_txt": str(paths["labeled_5pct_txt"]),
-            "val_split": "val_all",
-            "val_image_txt": str(paths["val_all_txt"]),
+            # Stage-1: train + in-loop val both from 5% pool (P0.1 holdout); final eval uses val_all
+            "train_split": "labeled_5pct_train",
+            "train_image_txt": str(paths["labeled_5pct_train_txt"]),
+            "val_split": "labeled_5pct_val",
+            "val_image_txt": str(paths["labeled_5pct_val_txt"]),
+            "val_use_labeled_holdout": True,
+            "run_final_eval": True,
             # P0.2 npy cache — major speedup vs re-encoding SAM every instance
             "use_sam_embedding_cache": True,
         },
@@ -66,6 +68,7 @@ def _build_config(
         },
         "logging": {"tensorboard": True, "wandb": True},
         "use_symmetric_loss": True,
+        "run_final_eval": True,
         "visualization": {
             "enabled": True,
             "num_samples": 4,
@@ -87,11 +90,13 @@ def run(
     run_dir: str | None = None,
     resume: bool = False,
     patience: int = 10,
+    run_final_eval: bool = True,
 ) -> Path:
     ensure_dirs()
     paths = build_coco_paths()
-    if not paths["labeled_5pct_txt"].exists():
-        raise FileNotFoundError("Run P0.1 generate_splits first.")
+    for req in (paths["labeled_5pct_train_txt"], paths["labeled_5pct_val_txt"]):
+        if not req.exists():
+            raise FileNotFoundError(f"Missing {req}. Run P0.1 generate_splits (--force to regenerate).")
 
     repo = Path(__file__).resolve().parents[2].parent
     if str(repo) not in sys.path:
@@ -117,6 +122,8 @@ def run(
     cfg["run_id"] = ctx.run_id
     cfg["run_dir"] = str(ctx.root)
 
+    cfg["run_final_eval"] = run_final_eval
+
     out = train_stage1_gnn(
         cfg,
         device=device,
@@ -124,6 +131,7 @@ def run(
         run_ctx=ctx,
         resume=resume,
     )
+
     print(f"[P0.4] Saved checkpoint: {out}")
     print(f"[P0.4] Run bundle: {ctx.root}")
     return out
@@ -145,6 +153,11 @@ def main() -> None:
     parser.add_argument("--resume", action="store_true", help="Resume from last.pt in run dir")
     parser.add_argument("--patience", type=int, default=10, help="Early stopping patience (0=off)")
     parser.add_argument("--no-early-stop", action="store_true")
+    parser.add_argument(
+        "--no-final-eval",
+        action="store_true",
+        help="Skip full val_all teacher eval after training",
+    )
     args = parser.parse_args()
 
     overrides = {}
@@ -168,6 +181,7 @@ def main() -> None:
         run_dir=args.run_dir,
         resume=args.resume,
         patience=0 if args.no_early_stop else args.patience,
+        run_final_eval=not args.no_final_eval,
     )
 
 

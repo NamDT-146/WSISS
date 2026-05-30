@@ -196,13 +196,18 @@ def train_stage1_gnn(
     if config.get("logging", {}).get("wandb", True):
         ctx.init_wandb(config)
 
+    from modules.wssis.eval_splits import resolve_eval_val_split
+
     data_cfg = config["data"]
+    use_labeled_holdout = data_cfg.get("val_use_labeled_holdout", True)
+    val_spec = resolve_eval_val_split(use_labeled_5pct_holdout=use_labeled_holdout)
     paths = {
         "coco_root": P(data_cfg["coco_root"]),
         "train_ann": P(data_cfg["coco_root"]) / "annotations" / "instances_train2017.json",
-        "val_ann": P(data_cfg["coco_root"]) / "annotations" / "instances_val2017.json",
+        "val_ann": val_spec["val_ann"],
         "train_txt": P(data_cfg["train_image_txt"]),
-        "val_txt": P(data_cfg["val_image_txt"]),
+        "val_txt": P(val_spec["val_image_txt"]),
+        "val_image_split": val_spec["image_split"],
     }
 
     common = dict(
@@ -220,28 +225,31 @@ def train_stage1_gnn(
     val_ds = CocoSamStage1Dataset(
         ann_json=paths["val_ann"],
         image_id_txt=paths["val_txt"],
-        split="val",
+        split=paths["val_image_split"],
         **common,
     )
 
-    if paths["train_txt"].name != "labeled_5pct.txt":
+    if paths["train_txt"].name != "labeled_5pct_train.txt":
         raise ValueError(
-            f"Stage-1 GNN must train on labeled_5pct only; got train_image_txt={paths['train_txt']}"
+            "Stage-1 GNN must train on labeled_5pct_train; "
+            f"got train_image_txt={paths['train_txt']}. Run P0.1 generate_splits --force"
         )
 
-    config.setdefault("data", {})["train_split"] = "labeled_5pct"
-    config["data"]["val_split"] = "val_all"
+    config.setdefault("data", {})["train_split"] = data_cfg.get("train_split", "labeled_5pct_train")
+    config["data"]["val_split"] = data_cfg.get("val_split", "labeled_5pct_val")
+    config["data"]["val_eval_scope"] = val_spec["scope"]
     config["data"]["n_train_instances"] = len(train_ds)
     config["data"]["n_val_instances"] = len(val_ds)
     ctx.log(
-        "Stage-1 train: %d instances from %s (~5%% of coco-minitrain-10k train images)",
+        "Stage-1 train: %d instances from %s (5%% labeled pool, train fold)",
         len(train_ds),
         paths["train_txt"],
     )
     ctx.log(
-        "Stage-1 val: %d instances from %s (minitrain val subset, not used for GNN weight updates)",
+        "Stage-1 val (early stop): %d instances from %s (%s; still train2017 images)",
         len(val_ds),
         paths["val_txt"],
+        val_spec["scope"],
     )
     use_sam_cache = data_cfg.get("use_sam_embedding_cache", True)
     if use_sam_cache and not sam_embeddings_dir().exists():
@@ -559,6 +567,17 @@ def train_stage1_gnn(
 
     ctx.update_step("stage1_gnn", {"status": "done", "best_val_refined_ap": best_val_ap})
     ctx.finalize_report_bundle()
+
+    if config.get("run_final_eval", True):
+        from modules.wssis.training.evaluate_teacher import evaluate_teacher_on_val
+
+        ctx.log("Running final teacher eval on full val_all...")
+        evaluate_teacher_on_val(
+            gnn_ckpt=final_path if final_path.exists() else legacy_ckpt,
+            run_ctx=ctx,
+            full_val=True,
+        )
+
     ctx.close()
     ctx.log("Stage-1 done. Run bundle: %s", ctx.root)
     return legacy_ckpt

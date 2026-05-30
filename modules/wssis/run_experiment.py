@@ -40,6 +40,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--run-id", default=None, help="Run folder under outputs/runs/")
     parser.add_argument("--run-dir", default=None, help="Explicit run directory path")
     parser.add_argument("--resume", action="store_true", help="Resume from progress/checkpoints")
+    parser.add_argument(
+        "--full-val",
+        action="store_true",
+        help="Eval stage: use full val_all (default: 20%% val subset for speed)",
+    )
     args = parser.parse_args(argv)
 
     if args.list:
@@ -101,6 +106,7 @@ def main(argv: list[str] | None = None) -> None:
                     task=f"eval_{eid}",
                     experiment_id=eid,
                 ),
+                full_val=args.full_val,
             )
 
     ctx.finalize_report_bundle()

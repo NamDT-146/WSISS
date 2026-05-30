@@ -132,7 +132,7 @@ Or step-by-step:
 | Feature                                                                   | Location                                         |
 | ------------------------------------------------------------------------- | ------------------------------------------------ |
 | Per-epoch **loss components** (raw + weighted BCE, Dice, sym; train + val) + **AP** (`raw_sam_ap`, `val_refined_ap`, `delta_ap`) | `outputs/runs/<id>/logs/metrics.jsonl` |
-| Stage-1 **train data** | `data/splits/labeled_5pct.txt` only (~5% of minitrain-10k); val = `val_all.txt` |
+| Stage-1 **train data** | `labeled_5pct_train.txt`; in-loop val = `labeled_5pct_val.txt`; final = `val_all.txt` |
 | Text log                                                                  | `logs/train.log`                                 |
 | TensorBoard                                                               | `logs/tensorboard/`                              |
 | WandB                                                                     | Set `WANDB_PROJECT=wssis`                        |
@@ -174,11 +174,20 @@ Each batch runs **SAM mask decoder** (per instance) + **GNN**. Without P0.2 cach
 
 **Further knobs:** lower `--batch-size` if OOM; `--max-instances` for debugging; ensure P0.2 finished on `train_all` + `val_all`.
 
+### Eval split policy (train fast, final full)
+
+| Phase | Train data | In-loop / routine eval | Final eval |
+|-------|------------|------------------------|------------|
+| **P0.4 Stage-1 GNN** | `labeled_5pct_train.txt` (~80% of 5% pool) | `labeled_5pct_val.txt` (~20% holdout, still 5% pool) | **`val_all.txt` full** (auto after P0.4; `--no-final-eval` to skip) |
+| **Stage-2 / experiments** | per exp (`train_all`, etc.) | **`val_sample_20pct.txt`** (~20% of val) | `python … evaluate_teacher --full-val` or `run_experiment --stage eval --full-val` |
+
+Regenerate splits after changing fractions: `python -m modules.wssis.prep.generate_splits --force`
+
 ### Stage-1 data split (supervised 5% only)
 
-P0.1 builds splits from **coco-minitrain-10k** (`train2017.txt` → `train_all.txt`, then `labeled_5pct.txt` ≈ 500 images).  
-**P0.4 trains the GNN only on instances from `labeled_5pct.txt`** (full GT masks). The 95% weak split is **not** used until Stage-2.  
-Validation during P0.4 uses **minitrain val** (`val_all.txt`), for early stopping / AP only.
+P0.1 builds **coco-minitrain-10k** lists, then `labeled_5pct.txt` (full 5% pool), split into **train/val folds** inside that pool.  
+**P0.4** trains on `labeled_5pct_train` only; early stopping uses `labeled_5pct_val` (not full `val_all`).  
+The 95% weak split is **not** used until Stage-2.
 
 ### Known limitation (PLAN §0.5)
 
@@ -269,12 +278,19 @@ wandb login
 
 ### Teacher eval on val (raw SAM + GNN-refined, all 3 weak-signal types)
 
-After P0.4 (GNN trained on labeled_5pct with unified point+box+scribble maps):
+Fast eval (20% val sample, default for experiment `--stage eval`):
 
 ```bash
 bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID
-# raw SAM only:
-bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID --raw-only
+```
+
+Full val (reporting / final numbers):
+
+```bash
+bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID --full-val
+# or after P0.4 (automatic unless --no-final-eval):
+# outputs/runs/<id>/eval/teacher_val_report_full.json
+```
 # or:
 python -m modules.wssis.training.evaluate_teacher --run-id $WSSIS_RUN_ID
 ```

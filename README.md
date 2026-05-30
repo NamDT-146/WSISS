@@ -69,9 +69,10 @@ checkpoints/gnn_refiner_stage1.pt
 
 ### Stage 1 — GNN warm-up (5% labeled only)
 
-**Training data:** instance samples from `data/splits/labeled_5pct.txt` only (~5% of coco-minitrain-10k train images, seed=42).  
-**Not used in Stage 1:** `weak_95pct.txt` (reserved for Stage-2 pseudo-labels).  
-**Validation:** minitrain val list (`val_all.txt`) for early stopping and AP metrics.
+**Training data:** `labeled_5pct_train.txt` (~80% of the 5% labeled image pool).  
+**In-loop validation:** `labeled_5pct_val.txt` (holdout from the same 5% pool — not full val).  
+**Final eval:** full `val_all.txt` after training (see `teacher_val_report_full.json`).  
+**Not used in Stage 1:** `weak_95pct.txt` (Stage-2). Routine experiment eval uses `val_sample_20pct.txt` (~20% of val).
 
 Pipeline ([report/PLAN.md](report/PLAN.md) §2):
 

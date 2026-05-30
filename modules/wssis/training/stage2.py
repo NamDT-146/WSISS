@@ -32,6 +32,9 @@ def _check_p0_artifacts(spec: ExperimentSpec) -> None:
     required = [
         paths["train_all_txt"],
         paths["labeled_5pct_txt"],
+        paths["labeled_5pct_train_txt"],
+        paths["labeled_5pct_val_txt"],
+        paths["val_sample_20pct_txt"],
         paths["weak_95pct_txt"],
         paths["val_prompts_json"],
     ]
@@ -213,7 +216,13 @@ def train_experiment(
     return out_dir
 
 
-def evaluate_experiment(spec: ExperimentSpec, dry_run: bool = False, run_ctx: Optional[RunContext] = None) -> None:
+def evaluate_experiment(
+    spec: ExperimentSpec,
+    dry_run: bool = False,
+    run_ctx: Optional[RunContext] = None,
+    *,
+    full_val: bool = False,
+) -> None:
     out_dir = experiment_output_dir(spec.id)
     print(f"[eval] Experiment {spec.id} — outputs at {out_dir}")
 
@@ -227,11 +236,13 @@ def evaluate_experiment(spec: ExperimentSpec, dry_run: bool = False, run_ctx: Op
     gnn_ckpt = gnn_checkpoint(spec.gnn_checkpoint) if spec.use_gnn else None
     modes = ("raw_sam", "gnn_refined") if spec.use_gnn else ("raw_sam",)
 
-    print("[eval] Teacher baseline on val (all weak-signal types)...")
+    scope = "full val_all" if full_val else "val_sample_20pct (fast)"
+    print(f"[eval] Teacher baseline on {scope}, all weak-signal types...")
     evaluate_teacher_on_val(
         gnn_ckpt=gnn_ckpt,
         run_ctx=ctx,
         modes=modes,
+        full_val=full_val,
     )
 
     print(

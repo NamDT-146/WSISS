@@ -24,7 +24,7 @@ Use this file to track progress before the written report and presentation. Chec
 
 | Done | Step | Command | Output |
 |------|------|---------|--------|
-| ☐ | **P0.1** Fixed splits (seed=42) | `python -m modules.wssis.prep.generate_splits` | `data/splits/labeled_5pct.txt`, `weak_95pct.txt`, `val_prompts_fixed.json` |
+| ☐ | **P0.1** Fixed splits (seed=42) | `python -m modules.wssis.prep.generate_splits` | `labeled_5pct_train/val.txt`, `val_sample_20pct.txt`, `weak_95pct.txt` |
 | ☐ | **P0.2** SAM embeddings cache | `python -m modules.wssis.prep.precompute_sam_embeddings` | `data/cache/sam_embeddings/` (~23 GB) |
 | ☐ | **P0.4** Stage-1 GNN (5% labeled) | `bash scripts/prep/run_p0.sh --run-id $WSSIS_RUN_ID` | `checkpoints/gnn_refiner_stage1.pt`, `outputs/runs/<id>/checkpoints/best.pt` |
 | ☐ | **P0.4b** GNN without sym loss (Exp 2C) | `train_stage1_gnn --symmetric-weight 0 --output-name gnn_refiner_no_sym.pt` | `checkpoints/gnn_refiner_no_sym.pt` |
@@ -33,7 +33,8 @@ Use this file to track progress before the written report and presentation. Chec
 
 - SAM embed → **node init only** (not sole input)
 - GNN inputs: RGB image + 3 SAM masks + weak-signal maps `[point | box | scribble]`
-- **Supervised train split:** `labeled_5pct.txt` only (~5% of minitrain-10k images); weak 95% reserved for Stage-2
+- **Stage-1 train:** `labeled_5pct_train.txt` | **Stage-1 val (early stop):** `labeled_5pct_val.txt` | **Final teacher eval:** full `val_all`
+- **Stage-2 routine eval:** `val_sample_20pct.txt` | **Final:** `--full-val`
 - Unified training: all 3 map channels populated on 5% GT
 - Early stopping on **`val_refined_ap`** (primary)
 

@@ -100,6 +100,9 @@ def evaluate_teacher_on_val(
     max_instances: Optional[int] = None,
     run_ctx: Optional[RunContext] = None,
     modes: tuple[str, ...] = ("raw_sam", "gnn_refined"),
+    *,
+    full_val: bool = False,
+    use_labeled_5pct_holdout: bool = False,
 ) -> Dict:
     """
     Run val-set eval for raw SAM and/or GNN-refined teacher across all weak-signal types.
@@ -115,15 +118,21 @@ def evaluate_teacher_on_val(
     )
     from modules.vig_refinenet.sam_stage1_refiner import build_sam_stage1_refiner
 
+    from modules.wssis.eval_splits import eval_report_name, resolve_eval_val_split
+
     paths = build_coco_paths()
+    val_spec = resolve_eval_val_split(
+        full_val=full_val,
+        use_labeled_5pct_holdout=use_labeled_5pct_holdout,
+    )
     mask_size = 256
     img_size = 1024
 
     val_ds = CocoSamStage1Dataset(
         coco_root=paths["coco_root"],
-        ann_json=paths["val_ann"],
-        image_id_txt=paths["val_all_txt"],
-        split="val",
+        ann_json=val_spec["val_ann"],
+        image_id_txt=val_spec["val_image_txt"],
+        split=val_spec["image_split"],
         img_size=img_size,
         mask_size=mask_size,
         max_instances=max_instances,
@@ -218,7 +227,8 @@ def evaluate_teacher_on_val(
 
     report = {
         "dataset": "coco_val",
-        "val_list": str(paths["val_all_txt"]),
+        "eval_scope": val_spec["scope"],
+        "val_list": str(val_spec["val_image_txt"]),
         "gnn_checkpoint": str(gnn_ckpt or gnn_checkpoint()) if "gnn_refined" in modes else None,
         "weak_signal_types": list(WEAK_SIGNAL_TYPES),
         "training_note": "GNN trained on labeled_5pct with unified 3-channel weak maps (point+box+scribble)",
@@ -226,7 +236,8 @@ def evaluate_teacher_on_val(
     }
 
     ctx = run_ctx or RunContext(task="teacher_eval")
-    out_path = ctx.eval_dir / "teacher_val_report.json"
+    report_name = eval_report_name(val_spec["scope"])
+    out_path = ctx.eval_dir / report_name
     out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     ctx.log("Teacher eval report -> %s", out_path)
     for mode, by_sig in results.items():
@@ -259,6 +270,16 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--max-instances", type=int, default=None, help="Debug subset")
     parser.add_argument("--raw-only", action="store_true", help="Skip GNN-refined eval")
+    parser.add_argument(
+        "--full-val",
+        action="store_true",
+        help="Evaluate on full val_all (default: val_sample_20pct for speed)",
+    )
+    parser.add_argument(
+        "--stage1-holdout",
+        action="store_true",
+        help="Evaluate on labeled_5pct_val holdout only",
+    )
     args = parser.parse_args(argv)
 
     ctx = RunContext(run_id=args.run_id, run_dir=args.run_dir, task="teacher_eval")
@@ -272,6 +293,8 @@ def main(argv: list[str] | None = None) -> None:
         max_instances=args.max_instances,
         run_ctx=ctx,
         modes=modes,
+        full_val=args.full_val,
+        use_labeled_5pct_holdout=args.stage1_holdout,
     )
 
 

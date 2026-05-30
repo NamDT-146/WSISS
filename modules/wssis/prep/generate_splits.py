@@ -52,6 +52,8 @@ def _ann_to_mask(ann: dict, height: int, width: int) -> np.ndarray:
 
 def run(
     labeled_fraction: float = 0.05,
+    stage1_holdout_fraction: float = 0.2,
+    val_sample_fraction: float = 0.2,
     seed: int = 42,
     force: bool = False,
 ) -> None:
@@ -83,6 +85,40 @@ def run(
     paths["labeled_5pct_txt"].write_text(
         "\n".join(_ids_to_txt_lines(labeled_ids, "train")) + "\n", encoding="utf-8"
     )
+
+    # Stage-1: train/val both inside the 5% labeled pool (image-level holdout)
+    n_holdout = max(1, int(round(len(labeled_ids) * stage1_holdout_fraction)))
+    if n_holdout >= len(labeled_ids):
+        n_holdout = max(1, len(labeled_ids) // 5)
+    labeled_val_ids = sorted(
+        rng.choice(labeled_ids, size=n_holdout, replace=False).tolist()
+    )
+    labeled_val_set = set(labeled_val_ids)
+    labeled_train_ids = sorted(i for i in labeled_ids if i not in labeled_val_set)
+    if not labeled_train_ids:
+        labeled_train_ids = labeled_val_ids[:1]
+        labeled_val_ids = labeled_val_ids[1:] or labeled_train_ids
+
+    paths["labeled_5pct_train_txt"].write_text(
+        "\n".join(_ids_to_txt_lines(labeled_train_ids, "train")) + "\n",
+        encoding="utf-8",
+    )
+    paths["labeled_5pct_val_txt"].write_text(
+        "\n".join(_ids_to_txt_lines(labeled_val_ids, "train")) + "\n",
+        encoding="utf-8",
+    )
+
+    val_all_ids = sorted(_load_image_ids(paths["val_all_txt"]))
+    rng_val = np.random.RandomState(seed + 1)
+    n_val_sample = max(1, int(round(len(val_all_ids) * val_sample_fraction)))
+    val_sample_ids = sorted(
+        rng_val.choice(val_all_ids, size=n_val_sample, replace=False).tolist()
+    )
+    paths["val_sample_20pct_txt"].write_text(
+        "\n".join(_ids_to_txt_lines(val_sample_ids, "val")) + "\n",
+        encoding="utf-8",
+    )
+
     paths["weak_95pct_txt"].write_text(
         "\n".join(_ids_to_txt_lines(weak_ids, "train")) + "\n", encoding="utf-8"
     )
@@ -137,10 +173,15 @@ def run(
     report = {
         "seed": seed,
         "labeled_fraction": labeled_fraction,
+        "stage1_holdout_fraction": stage1_holdout_fraction,
+        "val_sample_fraction": val_sample_fraction,
         "n_train_all": len(train_ids),
         "n_labeled_5pct": len(labeled_ids),
+        "n_labeled_5pct_train": len(labeled_train_ids),
+        "n_labeled_5pct_val": len(labeled_val_ids),
         "n_weak_95pct": len(weak_ids),
         "n_val": len(val_ids),
+        "n_val_sample_20pct": len(val_sample_ids),
         "n_val_prompt_images": len(val_prompts),
     }
     paths["split_report_json"].write_text(json.dumps(report, indent=2), encoding="utf-8")
@@ -151,10 +192,28 @@ def run(
 def main() -> None:
     parser = argparse.ArgumentParser(description="P0.1 generate fixed COCO splits")
     parser.add_argument("--labeled-fraction", type=float, default=0.05)
+    parser.add_argument(
+        "--stage1-holdout-fraction",
+        type=float,
+        default=0.2,
+        help="Fraction of labeled_5pct images for Stage-1 val (rest = train)",
+    )
+    parser.add_argument(
+        "--val-sample-fraction",
+        type=float,
+        default=0.2,
+        help="Fraction of val_all for fast teacher/student eval during 100%% training",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
-    run(labeled_fraction=args.labeled_fraction, seed=args.seed, force=args.force)
+    run(
+        labeled_fraction=args.labeled_fraction,
+        stage1_holdout_fraction=args.stage1_holdout_fraction,
+        val_sample_fraction=args.val_sample_fraction,
+        seed=args.seed,
+        force=args.force,
+    )
 
 
 if __name__ == "__main__":

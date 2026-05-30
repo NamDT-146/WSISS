@@ -32,7 +32,10 @@ Generated once from coco-minitrain-10k + COCO JSON intersection. **Never resampl
 data/splits/
 ├── train_all.txt          # ~10k images (minitrain train2017.txt)
 ├── val_all.txt            # val subset (minitrain val2017.txt)
-├── labeled_5pct.txt       # 500 images (~5% of train), image-level split
+├── labeled_5pct.txt       # full 5% pool (~500 images)
+├── labeled_5pct_train.txt # ~80% of pool → Stage-1 GNN train
+├── labeled_5pct_val.txt   # ~20% holdout → Stage-1 early-stop val (still 5% pool)
+├── val_sample_20pct.txt   # ~20% of val_all → fast eval during Stage-2 / routine
 ├── weak_95pct.txt         # remaining ~9500 images
 ├── labeled_5pct.json      # per-image instance ann_ids (Stage 1)
 ├── val_prompts_fixed.json # fixed val prompts per instance

@@ -20,6 +20,7 @@ while [[ $# -gt 0 ]]; do
     --run-id=*) RUN_ID="${1#*=}"; shift ;;
     --run-id) RUN_ID="${2:-}"; shift 2 ;;
     --raw-only) EXTRA+=(--raw-only); shift ;;
+    --full-val) EXTRA+=(--full-val); shift ;;
     *) EXTRA+=("$1"); shift ;;
   esac
 done
@@ -30,4 +31,5 @@ CMD+=("${EXTRA[@]}")
 
 echo "[eval] Teacher AP report: ${CMD[*]}"
 "${CMD[@]}"
-echo "[eval] Report: outputs/runs/${RUN_ID:-<run>}/eval/teacher_val_report.json"
+echo "[eval] Reports: outputs/runs/${RUN_ID:-<run>}/eval/teacher_val_report_*.json"
+echo "  (subset default; use --full-val for teacher_val_report_full.json)"
