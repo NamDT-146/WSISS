@@ -34,12 +34,10 @@ EVAL_ARGS=()
 [[ -n "$RUN_ID" ]] && EVAL_ARGS+=(--run-id "$RUN_ID")
 [[ -n "$RESUME" ]] && EVAL_ARGS+=($RESUME)
 
-EXPS=(1C 1A 1B 1D 2A 2B 2C 3A 3B 3C 4A)
-for exp in "${EXPS[@]}"; do
-  echo "========== Student eval $exp =========="
-  bash scripts/eval/run_experiment_eval.sh "$exp" "${EVAL_ARGS[@]}" "${EXTRA[@]}" || {
-    echo "WARNING: eval $exp failed (continuing)"
-  }
-done
+echo "========== Batch student eval (progress bar enabled) =========="
+python -u -m modules.wssis.run_experiment --exp all --stage eval --continue-on-error \
+  "${EVAL_ARGS[@]}" "${EXTRA[@]}" || {
+  echo "WARNING: One or more evals failed (see log above)"
+}
 
-echo "[eval] Batch student eval finished for ${#EXPS[@]} experiments."
+echo "[eval] Batch student eval finished."

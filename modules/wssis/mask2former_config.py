@@ -15,3 +15,5 @@ def add_wssis_config(cfg: CN) -> None:
     cfg.WSSIS.USE_GNN = False
     cfg.WSSIS.USE_DISTILL = False
     cfg.WSSIS.WEAK_SIGNAL = "none"
+    cfg.WSSIS.USE_FULL_VAL_FINAL = True
+    cfg.WSSIS.ITERS_PER_EPOCH = 1000

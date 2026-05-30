@@ -280,6 +280,50 @@ class Trainer(DefaultTrainer):
             optimizer = maybe_add_gradient_clipping(cfg, optimizer)
         return optimizer
 
+    def build_hooks(self):
+        hooks_list = super().build_hooks()
+        cfg = self.cfg
+        if add_wssis_config is None or not getattr(cfg, "WSSIS", None):
+            return hooks_list
+        if not cfg.WSSIS.EXPERIMENT_ID or not getattr(cfg.WSSIS, "USE_FULL_VAL_FINAL", False):
+            return hooks_list
+
+        from detectron2.engine import hooks as d2_hooks
+
+        from modules.wssis.mask2former_datasets import wssis_val_full_name
+        from modules.wssis.mask2former_hooks import WssisEvalHook
+
+        full_name = wssis_val_full_name(cfg.WSSIS.EXPERIMENT_ID)
+        eval_period = cfg.TEST.EVAL_PERIOD
+
+        def test_subset():
+            self._last_eval_results = self.test(self.cfg, self.model)
+            return self._last_eval_results
+
+        def test_full():
+            cfg_full = self.cfg.clone()
+            cfg_full.defrost()
+            cfg_full.DATASETS.TEST = (full_name,)
+            cfg_full.freeze()
+            results = self.test(cfg_full, self.model)
+            self._last_eval_results = results
+            logging.getLogger("mask2former").info(
+                "WSSIS final eval on full val_all (%s)", full_name
+            )
+            return results
+
+        patched: List[Any] = []
+        replaced = False
+        for hook in hooks_list:
+            if isinstance(hook, d2_hooks.EvalHook):
+                patched.append(WssisEvalHook(eval_period, test_subset, test_full))
+                replaced = True
+            else:
+                patched.append(hook)
+        if not replaced:
+            patched.append(WssisEvalHook(eval_period, test_subset, test_full))
+        return patched
+
     @classmethod
     def test_with_TTA(cls, cfg, model):
         logger = logging.getLogger("detectron2.trainer")

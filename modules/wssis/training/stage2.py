@@ -28,6 +28,11 @@ from modules.wssis.paths import (
 from modules.wssis.run_context import RunContext
 from modules.wssis.proc_utils import run_subprocess
 
+# Base Mask2Former config uses IMS_PER_BATCH=16 / BASE_LR=0.0001; doubled for WSSIS Stage-2.
+STAGE2_IMS_PER_BATCH = 32
+STAGE2_BASE_LR = 0.0002
+STAGE2_ITERS_PER_EPOCH = 1000
+
 
 def _check_p0_artifacts(spec: ExperimentSpec) -> None:
     paths = build_coco_paths()
@@ -134,7 +139,8 @@ def _mask2former_train(spec: ExperimentSpec, out_dir: Path, dry_run: bool = Fals
 
     base_yaml = _mask2former_base_config(m2f_root)
     swin_weights = swin_tiny_checkpoint()
-    max_iter = spec.stage2_epochs * 1000
+    max_iter = spec.stage2_epochs * STAGE2_ITERS_PER_EPOCH
+    eval_period = STAGE2_ITERS_PER_EPOCH
     lr_steps = (int(max_iter * 0.7), int(max_iter * 0.9))
 
     generated = out_dir / "mask2former_override.yaml"
@@ -154,15 +160,21 @@ WSSIS:
   USE_GNN: {str(spec.use_gnn).lower()}
   USE_DISTILL: {str(spec.use_distillation).lower()}
   WEAK_SIGNAL: "{spec.weak_signal}"
+  USE_FULL_VAL_FINAL: true
+  ITERS_PER_EPOCH: {STAGE2_ITERS_PER_EPOCH}
 DATASETS:
   TRAIN: ("{train_ds}",)
   TEST: ("{val_ds}",)
 MODEL:
   WEIGHTS: "{swin_weights.as_posix()}"
 OUTPUT_DIR: "{(out_dir / 'mask2former').as_posix()}"
+TEST:
+  EVAL_PERIOD: {eval_period}
 SOLVER:
   MAX_ITER: {max_iter}
   STEPS: ({lr_steps[0]}, {lr_steps[1]})
+  IMS_PER_BATCH: {STAGE2_IMS_PER_BATCH}
+  BASE_LR: {STAGE2_BASE_LR}
 """,
         encoding="utf-8",
     )
@@ -230,6 +242,7 @@ weak: {paths['weak_95pct_txt'].as_posix()}
     model.train(
         data=str(data_yaml),
         epochs=spec.stage2_epochs,
+        batch=32,
         project=str(out_dir),
         name="yolov8_seg",
         exist_ok=True,

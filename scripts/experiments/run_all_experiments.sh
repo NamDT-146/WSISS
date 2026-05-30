@@ -89,13 +89,11 @@ if (( PARALLEL > 0 )); then
   [[ -n "$DRY_RUN" ]] && PAR_ARGS+=($DRY_RUN)
   bash scripts/experiments/run_experiments_parallel.sh "${PAR_ARGS[@]}" "${EXTRA_ARGS[@]}"
 else
-  EXPS=(1C 1A 1B 1D 2A 2B 2C 3A 3B 3C 4A)
-  for exp in "${EXPS[@]}"; do
-    echo "========== Experiment $exp (stage=$STAGE) =========="
-    python -m modules.wssis.run_experiment --exp "$exp" "${RUN_FLAGS[@]}" $DRY_RUN "${EXTRA_ARGS[@]}" || {
-      echo "WARNING: Experiment $exp failed (continuing)"
-    }
-  done
+  echo "========== Sequential sweep (stage=$STAGE, progress bar enabled) =========="
+  python -u -m modules.wssis.run_experiment --exp all --continue-on-error \
+    "${RUN_FLAGS[@]}" $DRY_RUN "${EXTRA_ARGS[@]}" || {
+    echo "WARNING: One or more experiments failed (see log above)"
+  }
 fi
 
 if $WITH_EVAL; then

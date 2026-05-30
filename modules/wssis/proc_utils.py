@@ -106,8 +106,19 @@ def run_subprocess(
     if sys.platform != "win32":
         popen_kw["start_new_session"] = True
 
-    proc = subprocess.Popen(list(cmd), **popen_kw)
+    proc = subprocess.Popen(
+        list(cmd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        **popen_kw,
+    )
     try:
+        if proc.stdout is not None:
+            for line in proc.stdout:
+                sys.stdout.write(line)
+                sys.stdout.flush()
         return proc.wait()
     except KeyboardInterrupt:
         print("[wssis] Interrupted — terminating training process tree...", file=sys.stderr)

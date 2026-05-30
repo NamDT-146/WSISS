@@ -90,6 +90,26 @@ def wssis_dataset_names(experiment_id: str) -> Tuple[str, str]:
     return f"wssis_train_{exp}", f"wssis_val_{exp}"
 
 
+def wssis_val_full_name(experiment_id: str) -> str:
+    return f"wssis_val_full_{experiment_id or 'default'}"
+
+
+def _register_val_split(
+    name: str,
+    val_spec: dict,
+    paths,
+    cache_dir: Path,
+) -> None:
+    val_txt = Path(val_spec["val_image_txt"])
+    val_json = _ensure_filtered_coco_json(
+        Path(val_spec["val_ann"]),
+        val_txt,
+        cache_dir / f"coco_instances_val_{val_spec['scope']}_{name}.json",
+    )
+    val_image_root = resolve_coco_image_dir(paths["coco_root"], val_spec["image_split"])
+    _register_coco_instances(name, val_json, val_image_root)
+
+
 def register_wssis_datasets(cfg: CN) -> Tuple[str, str]:
     """
     Register train/val datasets using P0 layout:
@@ -113,14 +133,12 @@ def register_wssis_datasets(cfg: CN) -> Tuple[str, str]:
     _register_coco_instances(train_name, train_json, train_image_root)
 
     val_split = resolve_eval_val_split(full_val=False)
-    val_txt = Path(val_split["val_image_txt"])
-    val_json = _ensure_filtered_coco_json(
-        Path(val_split["val_ann"]),
-        val_txt,
-        cache_dir / f"coco_instances_val_{val_split['scope']}.json",
-    )
-    val_image_root = resolve_coco_image_dir(paths["coco_root"], val_split["image_split"])
-    _register_coco_instances(val_name, val_json, val_image_root)
+    _register_val_split(val_name, val_split, paths, cache_dir)
+
+    full_val_name = wssis_val_full_name(exp_id)
+    full_val_split = resolve_eval_val_split(full_val=True)
+    _register_val_split(full_val_name, full_val_split, paths, cache_dir)
+
     return train_name, val_name
 
 

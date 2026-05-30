@@ -21,6 +21,8 @@ def _ensure_repo_on_path() -> None:
 def main(argv: list[str] | None = None) -> None:
     _ensure_repo_on_path()
 
+    from tqdm import tqdm
+
     from modules.wssis.experiments.registry import DEFAULT_RUN_ORDER, EXPERIMENTS, get_experiment
     from modules.wssis.prep import run_p0
     from modules.wssis.run_context import RunContext
@@ -28,6 +30,11 @@ def main(argv: list[str] | None = None) -> None:
 
     parser = argparse.ArgumentParser(description="WSSIS experiment runner")
     parser.add_argument("--exp", default=None, help="Experiment ID (1A, 1C, ...) or 'all' / 'p0'")
+    parser.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help="With --exp all: continue remaining experiments after a failure",
+    )
     parser.add_argument(
         "--stage",
         choices=["prep", "train", "eval", "all"],
@@ -83,7 +90,18 @@ def main(argv: list[str] | None = None) -> None:
     else:
         ids = [args.exp.upper().replace("EXP", "")]
 
-    for eid in ids:
+    show_pbar = len(ids) > 1
+    exp_iter = (
+        tqdm(ids, desc="WSSIS experiments", unit="exp", dynamic_ncols=True)
+        if show_pbar
+        else ids
+    )
+    failures: list[str] = []
+
+    for eid in exp_iter:
+        if show_pbar:
+            exp_iter.set_postfix_str(f"exp={eid} stage={args.stage}", refresh=False)
+
         spec = get_experiment(eid)
         step_key = f"exp_{eid}"
         eval_key = f"eval_{eid}"
@@ -102,39 +120,48 @@ def main(argv: list[str] | None = None) -> None:
                 ctx.log("Skipping %s (train + eval done)", eid)
                 continue
 
-        if args.stage in ("train", "all"):
-            if args.resume and train_done:
-                ctx.log("Skipping train for %s (done)", eid)
-            else:
-                train_experiment(
-                    spec,
-                    dry_run=args.dry_run,
-                    skip_p0_check=args.skip_p0_check,
-                    run_ctx=RunContext(
-                        run_id=ctx.run_id,
-                        run_dir=ctx.root,
-                        task=f"exp_{eid}",
-                        experiment_id=eid,
-                    ),
-                )
-        if args.stage in ("eval", "all"):
-            if args.resume and eval_done:
-                ctx.log("Skipping eval for %s (done)", eid)
-            else:
-                evaluate_experiment(
-                    spec,
-                    dry_run=args.dry_run,
-                    run_ctx=RunContext(
-                        run_id=ctx.run_id,
-                        run_dir=ctx.root,
-                        task=eval_key,
-                        experiment_id=eid,
-                    ),
-                    full_val=args.full_val,
-                    with_teacher_eval=args.with_teacher_eval,
-                )
-                if not args.dry_run:
-                    ctx.update_step(eval_key, {"status": "done", "experiment_id": eid})
+        try:
+            if args.stage in ("train", "all"):
+                if args.resume and train_done:
+                    ctx.log("Skipping train for %s (done)", eid)
+                else:
+                    train_experiment(
+                        spec,
+                        dry_run=args.dry_run,
+                        skip_p0_check=args.skip_p0_check,
+                        run_ctx=RunContext(
+                            run_id=ctx.run_id,
+                            run_dir=ctx.root,
+                            task=f"exp_{eid}",
+                            experiment_id=eid,
+                        ),
+                    )
+            if args.stage in ("eval", "all"):
+                if args.resume and eval_done:
+                    ctx.log("Skipping eval for %s (done)", eid)
+                else:
+                    evaluate_experiment(
+                        spec,
+                        dry_run=args.dry_run,
+                        run_ctx=RunContext(
+                            run_id=ctx.run_id,
+                            run_dir=ctx.root,
+                            task=eval_key,
+                            experiment_id=eid,
+                        ),
+                        full_val=args.full_val,
+                        with_teacher_eval=args.with_teacher_eval,
+                    )
+                    if not args.dry_run:
+                        ctx.update_step(eval_key, {"status": "done", "experiment_id": eid})
+        except Exception as exc:
+            ctx.log("Experiment %s failed: %s", eid, exc)
+            failures.append(eid)
+            if not args.continue_on_error:
+                raise
+
+    if failures:
+        ctx.log("Finished with %d failure(s): %s", len(failures), ", ".join(failures))
 
     ctx.finalize_report_bundle()
 

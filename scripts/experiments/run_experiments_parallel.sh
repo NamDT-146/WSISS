@@ -113,14 +113,15 @@ run_parallel_queue() {
     echo "[parallel] GNU parallel: $JOBS workers (1 GPU each), queue=${queue_ref[*]}"
     export WSSIS_REPO_ROOT PYTHONPATH
     printf '%s\n' "${queue_ref[@]}" | \
-      parallel -j "$JOBS" --line-buffer --joblog "$LOG_DIR/joblog.tsv" \
+      parallel -j "$JOBS" --bar --line-buffer --joblog "$LOG_DIR/joblog.tsv" \
         "CUDA_VISIBLE_DEVICES=\$(( {%} - 1 )) WSSIS_NUM_GPUS=1 WSSIS_REPO_ROOT='$WSSIS_REPO_ROOT' PYTHONPATH='$PYTHONPATH' \
-         python -m modules.wssis.run_experiment --exp {} ${RUN_ARGS[*]}"
+         python -u -m modules.wssis.run_experiment --exp {} ${RUN_ARGS[*]}"
   else
     echo "[parallel] GNU parallel not found; using bash worker pool ($JOBS slots, 1 GPU each)"
     declare -A PID_GPU=()
+    declare -A PID_EXP=()
     FREE=()
-    local qi=0 failed=0 exp gpu pid rc
+    local qi=0 failed=0 finished=0 total=${#queue_ref[@]} exp gpu pid rc
 
     for (( g=0; g<JOBS; g++ )); do FREE+=("$g"); done
 
@@ -130,11 +131,16 @@ run_parallel_queue() {
           rc=0
           wait "$pid" || rc=$?
           gpu=${PID_GPU[$pid]}
+          exp=${PID_EXP[$pid]:-?}
           unset 'PID_GPU[$pid]'
+          unset 'PID_EXP[$pid]'
           FREE+=("$gpu")
+          finished=$((finished + 1))
           if (( rc != 0 )); then
-            echo "WARNING: job on GPU $gpu failed (exit $rc)"
+            echo "WARNING: $exp on GPU $gpu failed (exit $rc)"
             failed=$((failed + 1))
+          else
+            echo "[parallel] Progress: $finished/$total finished ($exp OK on GPU $gpu)"
           fi
           return 0
         fi
@@ -149,10 +155,11 @@ run_parallel_queue() {
         FREE=("${FREE[@]:1}")
         (
           export CUDA_VISIBLE_DEVICES=$gpu WSSIS_NUM_GPUS=1
-          python -m modules.wssis.run_experiment --exp "$exp" "${RUN_ARGS[@]}" "${EXTRA[@]}"
+          python -u -m modules.wssis.run_experiment --exp "$exp" "${RUN_ARGS[@]}" "${EXTRA[@]}"
         ) >"$LOG_DIR/exp_${exp}.gpu${gpu}.log" 2>&1 &
         PID_GPU[$!]=$gpu
-        echo "START $exp on GPU $gpu (pid $!)"
+        PID_EXP[$!]=$exp
+        echo "START $exp on GPU $gpu (pid $!) [$(( qi ))/$total queued]"
       done
       sleep 3
       while reap_one; do :; done
@@ -171,7 +178,7 @@ if $MAIN_FIRST; then
   (
     export CUDA_VISIBLE_DEVICES="$ALL_GPUS"
     export WSSIS_NUM_GPUS="$JOBS"
-    python -m modules.wssis.run_experiment --exp "$MAIN_EXP" "${RUN_ARGS[@]}" "${EXTRA[@]}"
+    python -u -m modules.wssis.run_experiment --exp "$MAIN_EXP" "${RUN_ARGS[@]}" "${EXTRA[@]}"
   ) 2>&1 | tee "$LOG_DIR/exp_${MAIN_EXP}.all_gpus.log"
   phase1_rc=${PIPESTATUS[0]}
   set -e
