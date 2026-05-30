@@ -22,6 +22,12 @@ def main() -> None:
     parser.add_argument("--force-splits", action="store_true")
     parser.add_argument("--force-embeddings", action="store_true")
     parser.add_argument("--stage1-epochs", type=int, default=20)
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=4,
+        help="Stage-1 GNN DataLoader batch size (default: 4)",
+    )
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--run-dir", default=None)
     parser.add_argument("--resume", action="store_true", help="Resume stage1 from checkpoint in run dir")
@@ -59,6 +65,7 @@ def main() -> None:
             ctx.update_step("p0_stage1", {"status": "running"})
             run_stage1(
                 epochs=args.stage1_epochs,
+                batch_size=args.batch_size,
                 run_id=ctx.run_id,
                 run_dir=str(ctx.root),
                 resume=args.resume,

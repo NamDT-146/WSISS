@@ -106,6 +106,8 @@ Pick a **run id** (all logs/checkpoints/viz go to one bundle):
 ```bash
 export WSSIS_RUN_ID=wssis_main
 bash scripts/prep/run_p0.sh --run-id $WSSIS_RUN_ID
+# larger GPU: pass Stage-1 batch size
+bash scripts/prep/run_p0.sh --run-id $WSSIS_RUN_ID --batch-size 16
 ```
 
 **Resume after interrupt** (skips completed steps in `progress.json`):
@@ -121,7 +123,7 @@ Or step-by-step:
 | ---- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
 | P0.1 | `python -m modules.wssis.prep.generate_splits`                                     | `data/splits/*`                                                                      |
 | P0.2 | `python -m modules.wssis.prep.precompute_sam_embeddings`                           | `data/cache/sam_embeddings/` (~23 GB)                                                |
-| P0.4 | `python -m modules.wssis.prep.train_stage1_gnn --run-id $WSSIS_RUN_ID --epochs 20` | `outputs/runs/<id>/checkpoints/best.pt` + legacy `checkpoints/gnn_refiner_stage1.pt` |
+| P0.4 | `python -m modules.wssis.prep.train_stage1_gnn --run-id $WSSIS_RUN_ID --epochs 20 --batch-size 4` | `outputs/runs/<id>/checkpoints/best.pt` + legacy `checkpoints/gnn_refiner_stage1.pt` |
 
 
 ### Logging & checkpoints (Stage-1)
