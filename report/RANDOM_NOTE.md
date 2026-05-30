@@ -1,0 +1,1 @@
+The code should use 1 GPU for the SAM inference as the dataloader, and all other GPU will for training the main stream.

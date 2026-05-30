@@ -5,9 +5,9 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-# shellcheck disable=SC1091
-source "$(conda info --base)/etc/profile.d/conda.sh" 2>/dev/null || true
-conda activate wssis 2>/dev/null || true
+# shellcheck source=scripts/lib/activate_wssis.sh
+source "$REPO_ROOT/scripts/lib/activate_wssis.sh"
+activate_wssis
 
 export WSSIS_REPO_ROOT="$REPO_ROOT"
 export PYTHONPATH="$REPO_ROOT:${PYTHONPATH:-}"

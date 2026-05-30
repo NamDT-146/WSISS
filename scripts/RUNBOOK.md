@@ -6,13 +6,15 @@ Step-by-step guide to clone, set up conda, download data, run P0 prep, and execu
 
 ## Prerequisites
 
-| Requirement | Notes |
-|-------------|--------|
-| Linux + NVIDIA GPU | CUDA 11.8+ recommended |
-| Conda (Miniconda/Anaconda) | For env `wssis` |
-| Git | Clone this repo |
-| Kaggle account | API token → `data/kaggle.json` |
-| Disk space | ~200 GB (COCO images + ~23 GB SAM cache + outputs) |
+
+| Requirement                | Notes                                              |
+| -------------------------- | -------------------------------------------------- |
+| Linux + NVIDIA GPU         | CUDA 11.8+ recommended                             |
+| Conda (Miniconda/Anaconda) | For env `wssis`                                    |
+| Git                        | Clone this repo                                    |
+| Kaggle account             | API token → `data/kaggle.json`                     |
+| Disk space                 | ~200 GB (COCO images + ~23 GB SAM cache + outputs) |
+
 
 **GPU policy** ([report/RANDOM_NOTE.md](../report/RANDOM_NOTE.md)): one GPU runs SAM teacher inference; remaining GPUs train the student. Set `CUDA_VISIBLE_DEVICES=0` for teacher and `WSSIS_NUM_GPUS` for Mask2Former.
 
@@ -49,6 +51,7 @@ conda activate wssis
 ```
 
 This will:
+
 1. Create/update env `wssis` from `environment.yml`
 2. `pip install -r requirements.txt`
 3. Install Detectron2 (CUDA 11.8 / torch 2.1 wheel)
@@ -67,6 +70,7 @@ cd modules/mask2former/mask2former/modeling/pixel_decoder/ops && bash make.sh
 ## Step 3 — Download datasets (Kaggle → `data/`)
 
 Datasets:
+
 - [COCO 2017](https://www.kaggle.com/datasets/awsaf49/coco-2017-dataset) → `data/coco2017/`
 - [coco-minitrain-10k](https://www.kaggle.com/datasets/banuprasadb/coco-minitrain-10k) → `data/coco_minitrain_10k/`
 
@@ -107,23 +111,27 @@ bash scripts/prep/run_p0.sh --run-id $WSSIS_RUN_ID --resume --skip-splits --skip
 
 Or step-by-step:
 
-| Step | Command | Output |
-|------|---------|--------|
-| P0.1 | `python -m modules.wssis.prep.generate_splits` | `data/splits/*` |
-| P0.2 | `python -m modules.wssis.prep.precompute_sam_embeddings` | `data/cache/sam_embeddings/` (~23 GB) |
+
+| Step | Command                                                                            | Output                                                                               |
+| ---- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| P0.1 | `python -m modules.wssis.prep.generate_splits`                                     | `data/splits/*`                                                                      |
+| P0.2 | `python -m modules.wssis.prep.precompute_sam_embeddings`                           | `data/cache/sam_embeddings/` (~23 GB)                                                |
 | P0.4 | `python -m modules.wssis.prep.train_stage1_gnn --run-id $WSSIS_RUN_ID --epochs 20` | `outputs/runs/<id>/checkpoints/best.pt` + legacy `checkpoints/gnn_refiner_stage1.pt` |
+
 
 ### Logging & checkpoints (Stage-1)
 
-| Feature | Location |
-|---------|----------|
-| Per-epoch losses + **AP (primary): raw_sam_ap, val_refined_ap, delta_ap** | `outputs/runs/<id>/logs/metrics.jsonl` |
-| Text log | `logs/train.log` |
-| TensorBoard | `logs/tensorboard/` |
-| WandB | Set `WANDB_PROJECT=wssis` |
-| `last.pt` / `best.pt` / `epoch_XXX.pt` | `checkpoints/` |
-| Early stopping (patience=10 on val_refined_ap) | enabled by default; `--no-early-stop` to disable |
-| Resume training | `--resume` loads `checkpoints/last.pt` |
+
+| Feature                                                                   | Location                                         |
+| ------------------------------------------------------------------------- | ------------------------------------------------ |
+| Per-epoch losses + **AP (primary): raw_sam_ap, val_refined_ap, delta_ap** | `outputs/runs/<id>/logs/metrics.jsonl`           |
+| Text log                                                                  | `logs/train.log`                                 |
+| TensorBoard                                                               | `logs/tensorboard/`                              |
+| WandB                                                                     | Set `WANDB_PROJECT=wssis`                        |
+| `last.pt` / `best.pt` / `epoch_XXX.pt`                                    | `checkpoints/`                                   |
+| Early stopping (patience=10 on val_refined_ap)                            | enabled by default; `--no-early-stop` to disable |
+| Resume training                                                           | `--resume` loads `checkpoints/last.pt`           |
+
 
 **Visualizations:** Every epoch → `outputs/runs/<id>/visualizations/` (5 panels). Report bundle → `outputs/runs/<id>/report/`.
 
@@ -172,19 +180,21 @@ python scripts/upload_exp_1c_hf.py --repo-id YOUR_USER/wssis-1c-demo --run-id $W
 
 ### Single experiment
 
-| Script | Experiment |
-|--------|------------|
+
+| Script                              | Experiment                     |
+| ----------------------------------- | ------------------------------ |
 | `scripts/experiments/run_exp_1a.py` | 1A — 5% supervised lower bound |
-| `scripts/experiments/run_exp_1b.py` | 1B — raw SAM weak baseline |
-| `scripts/experiments/run_exp_1c.py` | **1C — full SWSIS (main)** |
-| `scripts/experiments/run_exp_1d.py` | 1D — 100% upper bound |
-| `scripts/experiments/run_exp_2a.py` | 2A — no GNN |
-| `scripts/experiments/run_exp_2b.py` | 2B — no distillation |
-| `scripts/experiments/run_exp_2c.py` | 2C — no symmetric loss |
-| `scripts/experiments/run_exp_3a.py` | 3A — boxes only |
-| `scripts/experiments/run_exp_3b.py` | 3B — points only |
-| `scripts/experiments/run_exp_3c.py` | 3C — mixed signals |
-| `scripts/experiments/run_exp_4a.py` | 4A — YOLOv8-seg |
+| `scripts/experiments/run_exp_1b.py` | 1B — raw SAM weak baseline     |
+| `scripts/experiments/run_exp_1c.py` | **1C — full SWSIS (main)**     |
+| `scripts/experiments/run_exp_1d.py` | 1D — 100% upper bound          |
+| `scripts/experiments/run_exp_2a.py` | 2A — no GNN                    |
+| `scripts/experiments/run_exp_2b.py` | 2B — no distillation           |
+| `scripts/experiments/run_exp_2c.py` | 2C — no symmetric loss         |
+| `scripts/experiments/run_exp_3a.py` | 3A — boxes only                |
+| `scripts/experiments/run_exp_3b.py` | 3B — points only               |
+| `scripts/experiments/run_exp_3c.py` | 3C — mixed signals             |
+| `scripts/experiments/run_exp_4a.py` | 4A — YOLOv8-seg                |
+
 
 Dry-run (print commands only):
 
@@ -203,7 +213,7 @@ bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID --resume
 
 Order: **1C → 1A → 1B → 1D → 2A → 2B → 2C → 3A → 3B → 3C → 4A**
 
-Outputs: `outputs/runs/<run_id>/experiments/<ID>/` + **`outputs/runs/<run_id>/report/`** for upload
+Outputs: `outputs/runs/<run_id>/experiments/<ID>/` + `**outputs/runs/<run_id>/report/`** for upload
 
 ---
 
@@ -214,6 +224,7 @@ Outputs: `outputs/runs/<run_id>/experiments/<ID>/` + **`outputs/runs/<run_id>/re
 Progress tracker: **[CHECKLIST.md](CHECKLIST.md)**
 
 Log during training:
+
 - `sup_loss`, `semi_loss`, `distill_loss` (Stage-2, when integrated)
 - GNN `sym_loss`, `partial_ce`, agreement rate
 - GPU memory, time/epoch
@@ -279,13 +290,16 @@ wssis/
 
 ## Troubleshooting
 
-| Issue | Fix |
-|-------|-----|
-| `ModuleNotFoundError: modules` | `export PYTHONPATH=$PWD` from repo root |
-| Kaggle 403 | Check `data/kaggle.json` permissions and API token |
-| CUDA OOM on P0.2 | `--limit 100` for testing; reduce batch size |
-| Detectron2 import error | Re-run `00_create_conda_env.sh` or install matching wheel |
-| Mask2Former config missing | Add COCO configs under `modules/mask2former/configs/coco/` |
+
+| Issue                          | Fix                                                        |
+| ------------------------------ | ---------------------------------------------------------- |
+| `_CONDA_PYTHON_SYSCONFIGDATA_NAME_USED: unbound variable` on `conda activate` | Fixed in repo scripts via `scripts/lib/activate_wssis.sh`; sync repo (include `scripts/lib/`) then re-run |
+| `ModuleNotFoundError: modules` | `export PYTHONPATH=$PWD` from repo root                    |
+| Kaggle 403                     | Check `data/kaggle.json` permissions and API token         |
+| CUDA OOM on P0.2               | `--limit 100` for testing; reduce batch size               |
+| Detectron2 import error        | Re-run `00_create_conda_env.sh` or install matching wheel  |
+| Mask2Former config missing     | Add COCO configs under `modules/mask2former/configs/coco/` |
+
 
 ---
 
@@ -305,3 +319,4 @@ python -m modules.wssis.run_experiment --exp 1C --run-id $WSSIS_RUN_ID --stage a
 # zip outputs/runs/$WSSIS_RUN_ID/report/ for submission
 # Full checklist: scripts/CHECKLIST.md
 ```
+

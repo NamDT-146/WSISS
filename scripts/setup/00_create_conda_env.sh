@@ -21,9 +21,9 @@ else
   conda env create -f environment.yml
 fi
 
-# shellcheck disable=SC1091
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate wssis
+# shellcheck source=scripts/lib/activate_wssis.sh
+source "$REPO_ROOT/scripts/lib/activate_wssis.sh"
+activate_wssis
 
 export WSSIS_REPO_ROOT="$REPO_ROOT"
 export PYTHONPATH="$REPO_ROOT:${PYTHONPATH:-}"
