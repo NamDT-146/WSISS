@@ -9,6 +9,7 @@
 #   bash scripts/experiments/run_all_experiments.sh --with-p0 --run-id wssis_main
 #   bash scripts/experiments/run_all_experiments.sh --run-id wssis_main --resume
 #   bash scripts/experiments/run_all_experiments.sh --run-id wssis_main --parallel 5
+#     → 1C on all 5 GPUs, then 10 others at 5-wide parallel
 #   bash scripts/experiments/run_all_experiments.sh --run-id wssis_main --with-eval
 set -euo pipefail
 
