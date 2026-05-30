@@ -122,6 +122,10 @@ def _mask2former_train(spec: ExperimentSpec, out_dir: Path, dry_run: bool = Fals
 
     generated = out_dir / "mask2former_override.yaml"
     split_txt = _split_file_for_spec(spec)
+    train_ds, val_ds = (
+        f"wssis_train_{spec.id}",
+        f"wssis_val_{spec.id}",
+    )
     generated.write_text(
         f"""# Auto-generated for experiment {spec.id}
 _BASE_: "{base_yaml.as_posix()}"
@@ -133,6 +137,9 @@ WSSIS:
   USE_GNN: {str(spec.use_gnn).lower()}
   USE_DISTILL: {str(spec.use_distillation).lower()}
   WEAK_SIGNAL: "{spec.weak_signal}"
+DATASETS:
+  TRAIN: ("{train_ds}",)
+  TEST: ("{val_ds}",)
 OUTPUT_DIR: "{(out_dir / 'mask2former').as_posix()}"
 SOLVER:
   MAX_ITER: {spec.stage2_epochs * 1000}
@@ -155,6 +162,7 @@ SOLVER:
 
     env = os.environ.copy()
     env["PYTHONPATH"] = f"{repo_root()}{os.pathsep}{m2f_root}{os.pathsep}{env.get('PYTHONPATH', '')}"
+    env["WSSIS_REPO_ROOT"] = str(repo_root())
     env["WSSIS_IMAGE_LIST"] = str(split_txt)
     env["WSSIS_LABELED_SPLIT"] = spec.labeled_split
     env["WSSIS_WEAK_SPLIT"] = spec.weak_split

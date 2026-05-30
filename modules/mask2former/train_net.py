@@ -60,8 +60,10 @@ from mask2former import (
 
 try:
     from modules.wssis.mask2former_config import add_wssis_config
+    from modules.wssis.mask2former_datasets import ensure_wssis_datasets_in_cfg
 except ImportError:
     add_wssis_config = None
+    ensure_wssis_datasets_in_cfg = None
 
 
 class Trainer(DefaultTrainer):
@@ -295,6 +297,8 @@ def setup(args):
         add_wssis_config(cfg)
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
+    if ensure_wssis_datasets_in_cfg is not None:
+        ensure_wssis_datasets_in_cfg(cfg)
     cfg.freeze()
     default_setup(cfg, args)
     # Setup logger for "mask_former" module
