@@ -35,12 +35,13 @@ def _image_ids_from_txt(txt: Path) -> list[int]:
 
 
 def _image_path(image_id: int, split: str) -> Path:
-    root = coco_root()
-    for sub in (f"{split}2017", f"images/{split}2017"):
-        p = root / sub / f"{image_id:012d}.jpg"
-        if p.exists():
-            return p
-    raise FileNotFoundError(f"Image {image_id:012d} not found under {root}")
+    from modules.wssis.paths import resolve_coco_image_dir
+
+    image_dir = resolve_coco_image_dir(coco_root(), split)
+    path = image_dir / f"{image_id:012d}.jpg"
+    if path.exists():
+        return path
+    raise FileNotFoundError(f"Image {image_id:012d} not found under {image_dir}")
 
 
 def run(

@@ -75,6 +75,35 @@ def stage1_viz_dir(run_name: str = "default") -> Path:
     return d
 
 
+def resolve_coco_image_dir(coco_root: Path, split: str) -> Path:
+    """Return ``train2017`` / ``val2017`` image folder (matches P0 / CocoSamStage1Dataset)."""
+    root = Path(coco_root)
+    tried: list[Path] = []
+    for sub in (f"{split}2017", f"images/{split}2017"):
+        candidate = root / sub
+        tried.append(candidate)
+        if candidate.is_dir():
+            return candidate
+    raise FileNotFoundError(
+        f"COCO image directory not found for split={split!r} under {root}. "
+        f"Tried: {[str(p) for p in tried]}. Run: bash scripts/setup/01_download_data.sh"
+    )
+
+
+def resolve_experiment_train_image_txt(labeled_split: str, weak_split: str) -> Path:
+    """Train image list for Stage-2 (P0.1 ``data/splits/*.txt``, same as prep)."""
+    paths = build_coco_paths()
+    if labeled_split == "train_all":
+        return paths["train_all_txt"]
+    if labeled_split == "labeled_5pct" and weak_split == "weak_95pct":
+        return paths["train_all_txt"]
+    if labeled_split == "labeled_5pct":
+        return paths["labeled_5pct_txt"]
+    if weak_split == "weak_95pct":
+        return paths["weak_95pct_txt"]
+    return paths["train_all_txt"]
+
+
 def build_coco_paths(coco_root_override: Optional[Path] = None) -> Dict[str, Path]:
     """Paths for COCO 2017 + minitrain-10k (local remote-machine layout)."""
     root = Path(coco_root_override) if coco_root_override else coco_root()

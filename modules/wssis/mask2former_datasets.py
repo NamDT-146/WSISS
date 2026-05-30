@@ -1,67 +1,80 @@
-"""Register WSSIS COCO splits with Detectron2 for Mask2Former training."""
+"""Register WSSIS COCO splits with Detectron2 — same paths/filtering as P0 prep."""
 
 from __future__ import annotations
 
-import re
+import json
 from pathlib import Path
-from typing import Optional, Set, Tuple
+from typing import Tuple
 
 from detectron2.config import CfgNode as CN
 from detectron2.data import DatasetCatalog, MetadataCatalog
 from detectron2.data.datasets.builtin_meta import COCO_CATEGORIES
 from detectron2.data.datasets.coco import load_coco_json
 
+from modules.vig_refinenet.coco_sam_stage1_dataset import (
+    filter_coco_json,
+    load_image_ids_from_txt,
+)
 from modules.wssis.eval_splits import resolve_eval_val_split
-from modules.wssis.paths import build_coco_paths
-
-
-def load_image_ids_from_txt(txt_path: Path) -> Set[int]:
-    ids: Set[int] = set()
-    with open(txt_path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            match = re.search(r"(\d{12})", line)
-            if match:
-                ids.add(int(match.group(1)))
-    return ids
+from modules.wssis.paths import (
+    build_coco_paths,
+    resolve_coco_image_dir,
+    resolve_experiment_train_image_txt,
+)
 
 
 def _coco_thing_classes() -> list[str]:
     return [c["name"] for c in COCO_CATEGORIES if int(c.get("isthing", 1)) == 1]
 
 
-def _register_filtered_coco(
-    name: str,
-    *,
-    json_file: Path,
-    image_root: Path,
-    image_ids: Optional[Set[int]],
-) -> None:
+def _ensure_filtered_coco_json(
+    source_ann: Path,
+    image_id_txt: Path,
+    out_path: Path,
+) -> Path:
+    """Write a filtered COCO json (same filter as CocoSamStage1Dataset / P0)."""
+    source_ann = source_ann.resolve()
+    image_id_txt = image_id_txt.resolve()
+    if not source_ann.is_file():
+        raise FileNotFoundError(
+            f"COCO annotation file not found: {source_ann}\n"
+            "Run: bash scripts/setup/01_download_data.sh"
+        )
+    if not image_id_txt.is_file():
+        raise FileNotFoundError(
+            f"Split image list not found: {image_id_txt}\n"
+            "Run: python -m modules.wssis.prep.generate_splits"
+        )
+
+    out_path = out_path.resolve()
+    if out_path.exists() and out_path.stat().st_mtime >= max(
+        source_ann.stat().st_mtime, image_id_txt.stat().st_mtime
+    ):
+        return out_path
+
+    with open(source_ann, encoding="utf-8") as f:
+        full_data = json.load(f)
+    subset_ids = load_image_ids_from_txt(image_id_txt)
+    filtered = filter_coco_json(full_data, subset_ids)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(filtered), encoding="utf-8")
+    return out_path
+
+
+def _register_coco_instances(name: str, json_file: Path, image_root: Path) -> None:
     if name in DatasetCatalog.list():
         return
 
     json_file = json_file.resolve()
     image_root = image_root.resolve()
-    if not json_file.is_file():
-        raise FileNotFoundError(
-            f"COCO annotation file not found: {json_file}\n"
-            "Run: bash scripts/setup/01_download_data.sh"
-        )
     if not image_root.is_dir():
         raise FileNotFoundError(
             f"COCO image root not found: {image_root}\n"
             "Run: bash scripts/setup/01_download_data.sh"
         )
 
-    allowed = image_ids
-
     def loader() -> list[dict]:
-        records = load_coco_json(str(json_file), str(image_root), name)
-        if allowed is None:
-            return records
-        return [record for record in records if record["image_id"] in allowed]
+        return load_coco_json(str(json_file), str(image_root), name)
 
     DatasetCatalog.register(name, loader)
     MetadataCatalog.get(name).set(
@@ -72,55 +85,42 @@ def _register_filtered_coco(
     )
 
 
-def resolve_train_image_ids(cfg: CN) -> Set[int]:
-    paths = build_coco_paths()
-    ids: Set[int] = set()
-
-    labeled = cfg.WSSIS.LABELED_SPLIT
-    if labeled == "train_all":
-        ids |= load_image_ids_from_txt(paths["train_all_txt"])
-    elif labeled == "labeled_5pct":
-        ids |= load_image_ids_from_txt(paths["labeled_5pct_txt"])
-
-    if cfg.WSSIS.WEAK_SPLIT == "weak_95pct":
-        ids |= load_image_ids_from_txt(paths["weak_95pct_txt"])
-
-    if not ids:
-        raise ValueError(
-            "No training images resolved from WSSIS split config "
-            f"(labeled_split={labeled!r}, weak_split={cfg.WSSIS.WEAK_SPLIT!r})"
-        )
-    return ids
-
-
 def wssis_dataset_names(experiment_id: str) -> Tuple[str, str]:
     exp = experiment_id or "default"
     return f"wssis_train_{exp}", f"wssis_val_{exp}"
 
 
 def register_wssis_datasets(cfg: CN) -> Tuple[str, str]:
-    """Register train/val COCO datasets under data/coco2017 for this experiment."""
+    """
+    Register train/val datasets using P0 layout:
+    ``data/coco2017`` + ``data/splits/*.txt`` + filtered instances json.
+    """
     exp_id = cfg.WSSIS.EXPERIMENT_ID
     train_name, val_name = wssis_dataset_names(exp_id)
     paths = build_coco_paths()
+    cache_dir = Path(cfg.OUTPUT_DIR).parent
 
-    train_ids = resolve_train_image_ids(cfg)
-    _register_filtered_coco(
-        train_name,
-        json_file=paths["train_ann"],
-        image_root=paths["coco_root"] / "images" / "train2017",
-        image_ids=train_ids,
+    train_txt = resolve_experiment_train_image_txt(
+        cfg.WSSIS.LABELED_SPLIT,
+        cfg.WSSIS.WEAK_SPLIT,
     )
+    train_json = _ensure_filtered_coco_json(
+        paths["train_ann"],
+        train_txt,
+        cache_dir / f"coco_instances_train_{train_txt.stem}.json",
+    )
+    train_image_root = resolve_coco_image_dir(paths["coco_root"], "train")
+    _register_coco_instances(train_name, train_json, train_image_root)
 
     val_split = resolve_eval_val_split(full_val=False)
-    val_ids = load_image_ids_from_txt(Path(val_split["val_image_txt"]))
-    val_split_name = val_split["image_split"]
-    _register_filtered_coco(
-        val_name,
-        json_file=Path(val_split["val_ann"]),
-        image_root=paths["coco_root"] / "images" / f"{val_split_name}2017",
-        image_ids=val_ids,
+    val_txt = Path(val_split["val_image_txt"])
+    val_json = _ensure_filtered_coco_json(
+        Path(val_split["val_ann"]),
+        val_txt,
+        cache_dir / f"coco_instances_val_{val_split['scope']}.json",
     )
+    val_image_root = resolve_coco_image_dir(paths["coco_root"], val_split["image_split"])
+    _register_coco_instances(val_name, val_json, val_image_root)
     return train_name, val_name
 
 

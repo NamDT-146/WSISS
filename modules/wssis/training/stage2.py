@@ -23,6 +23,7 @@ from modules.wssis.paths import (
     experiment_output_dir,
     gnn_checkpoint,
     repo_root,
+    resolve_experiment_train_image_txt,
 )
 from modules.wssis.run_context import RunContext
 
@@ -49,14 +50,7 @@ def _check_p0_artifacts(spec: ExperimentSpec) -> None:
 
 
 def _split_file_for_spec(spec: ExperimentSpec) -> Path:
-    paths = build_coco_paths()
-    if spec.labeled_split == "train_all":
-        return paths["train_all_txt"]
-    if spec.labeled_split == "labeled_5pct":
-        return paths["labeled_5pct_txt"]
-    if spec.weak_split == "weak_95pct":
-        return paths["weak_95pct_txt"]
-    return paths["train_all_txt"]
+    return resolve_experiment_train_image_txt(spec.labeled_split, spec.weak_split)
 
 
 def _write_experiment_config(spec: ExperimentSpec, out_dir: Path, ctx: Optional[RunContext] = None) -> Path:

@@ -101,11 +101,9 @@ class CocoSamStage1Dataset(Dataset):
         self.mask_size = mask_size
         self.split = split
 
-        image_dir = self.coco_root / f"{split}2017"
-        if not image_dir.exists():
-            image_dir = self.coco_root / "images" / f"{split}2017"
+        from modules.wssis.paths import resolve_coco_image_dir
 
-        self.image_dir = image_dir
+        self.image_dir = resolve_coco_image_dir(self.coco_root, split)
 
         with open(ann_json, "r", encoding="utf-8") as f:
             full_data = json.load(f)
