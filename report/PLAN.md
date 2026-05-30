@@ -114,7 +114,10 @@ P4  Exp 3A, 3B, 3C — signal sensitivity
 P5  Exp 4A — YOLOv8-seg
 ```
 
-Log during every run (WandB/TensorBoard): `sup_loss`, `semi_loss`, `distill_loss`, GNN `sym_loss` / `partial_ce`, agreement rate, GPU mem, time/epoch.
+Log during every run (WandB/TensorBoard + `metrics.jsonl`):
+
+- **Stage-1 GNN:** `bce_raw`, `bce_weighted`, `dice_raw`, `dice_weighted`, `seg_weighted`, `sym_raw`, `sym_weighted`, `total` (train + val); AP: `raw_sam_ap`, `val_refined_ap`, `delta_ap`. Train split = `labeled_5pct` only.
+- **Stage-2 student:** `sup_loss`, `semi_loss`, `distill_loss`, GNN `sym_loss` / `partial_ce`, agreement rate, GPU mem, time/epoch.
 
 After every run: COCO AP, AP50, AP75, AP_S/M/L + qualitative grids ([EXPERIMENT.md](EXPERIMENT.md) Phase 3).
 

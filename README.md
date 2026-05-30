@@ -67,7 +67,11 @@ data/cache/sam_embeddings/   [256,64,64] fp16 per image
 checkpoints/gnn_refiner_stage1.pt
 ```
 
-### Stage 1 — GNN warm-up (5% labeled)
+### Stage 1 — GNN warm-up (5% labeled only)
+
+**Training data:** instance samples from `data/splits/labeled_5pct.txt` only (~5% of coco-minitrain-10k train images, seed=42).  
+**Not used in Stage 1:** `weak_95pct.txt` (reserved for Stage-2 pseudo-labels).  
+**Validation:** minitrain val list (`val_all.txt`) for early stopping and AP metrics.
 
 Pipeline ([report/PLAN.md](report/PLAN.md) §2):
 
@@ -147,13 +151,17 @@ All final numbers should be **COCO mask AP** on the validation split (minitrain 
 
 Teacher report JSON: `outputs/runs/<run_id>/eval/teacher_val_report.json`
 
-Stage-1 training logs (per epoch): `raw_sam_ap`, `val_refined_ap`, `delta_ap` in `logs/metrics.jsonl`.  
+Stage-1 training logs (per epoch) in `logs/metrics.jsonl`:
+
+- **Loss (all components):** `train_*` / `val_*` for `bce_raw`, `bce_weighted`, `dice_raw`, `dice_weighted`, `seg_weighted`, `sym_raw`, `sym_weighted`, `total` (legacy: `train_loss`, `train_bce_loss`, …)
+- **AP (primary for early stop):** `raw_sam_ap`, `val_refined_ap`, `delta_ap`
+
 Early stopping uses **`val_refined_ap`**.
 
 ### Secondary (analysis only)
 
 - IoU / Dice during GNN training  
-- Loss components: BCE, Dice, symmetric, sup/semi/distill (Stage 2)  
+- Stage-2: `sup_loss`, `semi_loss`, `distill_loss` (when integrated)  
 - GNN agreement rate (≥2/3 masks)  
 - GPU memory, time/epoch  
 

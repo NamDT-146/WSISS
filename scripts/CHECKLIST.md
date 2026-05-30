@@ -33,6 +33,7 @@ Use this file to track progress before the written report and presentation. Chec
 
 - SAM embed → **node init only** (not sole input)
 - GNN inputs: RGB image + 3 SAM masks + weak-signal maps `[point | box | scribble]`
+- **Supervised train split:** `labeled_5pct.txt` only (~5% of minitrain-10k images); weak 95% reserved for Stage-2
 - Unified training: all 3 map channels populated on 5% GT
 - Early stopping on **`val_refined_ap`** (primary)
 
@@ -106,8 +107,10 @@ Run all: `bash scripts/experiments/run_all_experiments.sh --with-p0 --run-id $WS
 
 | Metric | Stage | Where |
 |--------|-------|-------|
-| `train_bce`, `train_dice`, `train_sym` | Stage-1 GNN | `logs/metrics.jsonl` |
-| **`raw_sam_ap`, `val_refined_ap`, `delta_ap`** | Stage-1 GNN (primary) | same |
+| `train_bce_raw`, `train_bce_weighted`, `train_dice_raw`, `train_dice_weighted`, `train_seg_weighted`, `train_sym_raw`, `train_sym_weighted`, `train_total` | Stage-1 GNN (train) | `logs/metrics.jsonl` |
+| `val_bce_raw`, `val_bce_weighted`, `val_dice_raw`, `val_dice_weighted`, `val_seg_weighted`, `val_total` | Stage-1 GNN (val) | same |
+| Legacy aliases: `train_loss`, `train_bce_loss`, `train_dice_loss`, `train_sym_loss`, `val_*` | Stage-1 GNN | same |
+| **`raw_sam_ap`, `val_refined_ap`, `delta_ap`** | Stage-1 GNN (primary AP) | same |
 | `sup_loss`, `semi_loss`, `distill_loss` | Stage-2 | WandB / TB (when integrated) |
 | GNN agreement rate | Stage-2 | WandB |
 | GPU mem, time/epoch | both | `metrics.jsonl` |

@@ -131,7 +131,8 @@ Or step-by-step:
 
 | Feature                                                                   | Location                                         |
 | ------------------------------------------------------------------------- | ------------------------------------------------ |
-| Per-epoch losses + **AP (primary): raw_sam_ap, val_refined_ap, delta_ap** | `outputs/runs/<id>/logs/metrics.jsonl`           |
+| Per-epoch **loss components** (raw + weighted BCE, Dice, sym; train + val) + **AP** (`raw_sam_ap`, `val_refined_ap`, `delta_ap`) | `outputs/runs/<id>/logs/metrics.jsonl` |
+| Stage-1 **train data** | `data/splits/labeled_5pct.txt` only (~5% of minitrain-10k); val = `val_all.txt` |
 | Text log                                                                  | `logs/train.log`                                 |
 | TensorBoard                                                               | `logs/tensorboard/`                              |
 | WandB                                                                     | Set `WANDB_PROJECT=wssis`                        |
@@ -155,6 +156,12 @@ python -m modules.wssis.prep.train_stage1_gnn --run-id debug --epochs 2 --max-in
 python -m modules.wssis.prep.train_stage1_gnn --run-id $WSSIS_RUN_ID \
   --symmetric-weight 0 --output-name gnn_refiner_no_sym.pt
 ```
+
+### Stage-1 data split (supervised 5% only)
+
+P0.1 builds splits from **coco-minitrain-10k** (`train2017.txt` → `train_all.txt`, then `labeled_5pct.txt` ≈ 500 images).  
+**P0.4 trains the GNN only on instances from `labeled_5pct.txt`** (full GT masks). The 95% weak split is **not** used until Stage-2.  
+Validation during P0.4 uses **minitrain val** (`val_all.txt`), for early stopping / AP only.
 
 ### Known limitation (PLAN §0.5)
 

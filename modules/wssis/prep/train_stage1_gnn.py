@@ -30,7 +30,10 @@ def _build_config(
             "num_workers": 4,
             "max_instances": max_instances,
             "coco_root": str(paths["coco_root"]),
+            # Supervised Stage-1 only: ~5% of coco-minitrain-10k train images (P0.1 seed=42)
+            "train_split": "labeled_5pct",
             "train_image_txt": str(paths["labeled_5pct_txt"]),
+            "val_split": "val_all",
             "val_image_txt": str(paths["val_all_txt"]),
         },
         "model": {

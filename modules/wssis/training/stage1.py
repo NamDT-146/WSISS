@@ -19,15 +19,53 @@ from modules.wssis.paths import checkpoints_dir, sam_vit_b_checkpoint
 from modules.wssis.run_context import EarlyStopping, RunContext, gpu_memory_mb
 
 
-def _loss_components(criterion, logits: torch.Tensor, masks: torch.Tensor) -> Dict[str, float]:
-    """Decompose CombinedSegLoss for metrics.jsonl."""
-    bce = criterion.bce(logits, masks).item()
-    dice = criterion.dice(logits, masks).item()
+def _loss_components(
+    criterion,
+    logits: torch.Tensor,
+    masks: torch.Tensor,
+    *,
+    sym_weight: float = 0.0,
+    sym_raw: float = 0.0,
+) -> Dict[str, float]:
+    """Decompose BCE, Dice, symmetric, and weighted totals for metrics.jsonl."""
+    bce_raw = criterion.bce(logits, masks).item()
+    dice_raw = criterion.dice(logits, masks).item()
+    bce_weighted = criterion.bce_weight * bce_raw
+    dice_weighted = criterion.dice_weight * dice_raw
+    seg_weighted = bce_weighted + dice_weighted
+    sym_weighted = sym_weight * sym_raw
     return {
-        "bce_loss": bce,
-        "dice_loss": dice,
-        "total_loss": criterion.bce_weight * bce + criterion.dice_weight * dice,
+        "bce_raw": bce_raw,
+        "dice_raw": dice_raw,
+        "bce_weighted": bce_weighted,
+        "dice_weighted": dice_weighted,
+        "seg_weighted": seg_weighted,
+        "sym_raw": sym_raw,
+        "sym_weighted": sym_weighted,
+        "total": seg_weighted + sym_weighted,
     }
+
+
+def _loss_totals_template(*, with_sym: bool) -> Dict[str, float]:
+    keys = ["bce_raw", "dice_raw", "bce_weighted", "dice_weighted", "seg_weighted", "total"]
+    if with_sym:
+        keys.extend(["sym_raw", "sym_weighted"])
+    return {k: 0.0 for k in keys}
+
+
+def _accumulate_losses(totals: Dict[str, float], comps: Dict[str, float]) -> None:
+    for k in totals:
+        totals[k] += comps[k]
+
+
+def _mean_losses(totals: Dict[str, float], n: int) -> Dict[str, float]:
+    if n <= 0:
+        return totals
+    return {k: v / n for k, v in totals.items()}
+
+
+def _prefix_loss_metrics(metrics: Dict[str, float], prefix: str) -> Dict[str, float]:
+    return {f"{prefix}_{k}": metrics[k] for k in metrics}
 
 
 def _stage1_forward_batch(
@@ -171,6 +209,27 @@ def train_stage1_gnn(
         **common,
     )
 
+    if paths["train_txt"].name != "labeled_5pct.txt":
+        raise ValueError(
+            f"Stage-1 GNN must train on labeled_5pct only; got train_image_txt={paths['train_txt']}"
+        )
+
+    config.setdefault("data", {})["train_split"] = "labeled_5pct"
+    config["data"]["val_split"] = "val_all"
+    config["data"]["n_train_instances"] = len(train_ds)
+    config["data"]["n_val_instances"] = len(val_ds)
+    ctx.log(
+        "Stage-1 train: %d instances from %s (~5%% of coco-minitrain-10k train images)",
+        len(train_ds),
+        paths["train_txt"],
+    )
+    ctx.log(
+        "Stage-1 val: %d instances from %s (minitrain val subset, not used for GNN weight updates)",
+        len(val_ds),
+        paths["val_txt"],
+    )
+    ctx.save_config(config)
+
     batch_size = training_cfg.get("batch_size", 4)
     num_workers = data_cfg.get("num_workers", 4)
     train_loader = DataLoader(
@@ -257,7 +316,7 @@ def train_stage1_gnn(
             torch.cuda.reset_peak_memory_stats(dev)
 
         refiner.train()
-        train_totals = {"bce_loss": 0.0, "dice_loss": 0.0, "total_loss": 0.0, "sym_loss": 0.0}
+        train_totals = _loss_totals_template(with_sym=True)
         n_batches = 0
 
         train_pbar = tqdm(
@@ -287,27 +346,30 @@ def train_stage1_gnn(
                 sym_l = symmetric_loss(logits)
                 loss = loss + sym_w * sym_l
                 sym_val = sym_l.item()
-            comps = _loss_components(criterion, logits.detach(), gt3)
+            comps = _loss_components(
+                criterion,
+                logits.detach(),
+                gt3,
+                sym_weight=sym_w,
+                sym_raw=sym_val,
+            )
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
 
-            train_totals["bce_loss"] += comps["bce_loss"]
-            train_totals["dice_loss"] += comps["dice_loss"]
-            train_totals["total_loss"] += comps["total_loss"] + sym_w * sym_val
-            train_totals["sym_loss"] += sym_val
+            _accumulate_losses(train_totals, comps)
             n_batches += 1
             train_pbar.set_postfix(
-                loss=f"{comps['total_loss'] + sym_w * sym_val:.4f}",
-                sym=f"{sym_val:.4f}",
+                total=f"{comps['total']:.4f}",
+                seg=f"{comps['seg_weighted']:.4f}",
+                sym=f"{comps['sym_weighted']:.4f}",
             )
 
-        for k in train_totals:
-            train_totals[k] /= max(n_batches, 1)
+        train_mean = _mean_losses(train_totals, n_batches)
 
         refiner.eval()
-        val_totals = {"bce_loss": 0.0, "dice_loss": 0.0, "total_loss": 0.0}
+        val_totals = _loss_totals_template(with_sym=False)
         vn = 0
         tracker = RefinementMetricTracker()
         val_pbar = tqdm(
@@ -333,26 +395,31 @@ def train_stage1_gnn(
                     unified_weak_maps=True,
                 )
                 comps = _loss_components(criterion, logits, gt3)
-                for k in val_totals:
-                    val_totals[k] += comps[k]
+                _accumulate_losses(val_totals, comps)
                 vn += 1
                 tracker.update(sam_masks_3, sam_scores, logits, masks)
-                val_pbar.set_postfix(loss=f"{comps['total_loss']:.4f}")
-        for k in val_totals:
-            val_totals[k] /= max(vn, 1)
+                val_pbar.set_postfix(
+                    total=f"{comps['total']:.4f}",
+                    bce_w=f"{comps['bce_weighted']:.4f}",
+                    dice_w=f"{comps['dice_weighted']:.4f}",
+                )
+        val_mean = _mean_losses(val_totals, vn)
 
         val_metrics = tracker.compute()
         epoch_time = time.perf_counter() - t0
         row = {
             "epoch": epoch,
             "phase": "train",
-            "train_loss": train_totals["total_loss"],
-            "train_bce_loss": train_totals["bce_loss"],
-            "train_dice_loss": train_totals["dice_loss"],
-            "train_sym_loss": train_totals["sym_loss"],
-            "val_loss": val_totals["total_loss"],
-            "val_bce_loss": val_totals["bce_loss"],
-            "val_dice_loss": val_totals["dice_loss"],
+            **_prefix_loss_metrics(train_mean, "train"),
+            **_prefix_loss_metrics(val_mean, "val"),
+            # Legacy aliases (total + raw BCE/Dice/sym)
+            "train_loss": train_mean["total"],
+            "train_bce_loss": train_mean["bce_raw"],
+            "train_dice_loss": train_mean["dice_raw"],
+            "train_sym_loss": train_mean["sym_raw"],
+            "val_loss": val_mean["total"],
+            "val_bce_loss": val_mean["bce_raw"],
+            "val_dice_loss": val_mean["dice_raw"],
             "val_iou": val_metrics["refined_iou"],
             "raw_sam_iou": val_metrics["raw_sam_iou"],
             "refined_iou": val_metrics["refined_iou"],
@@ -370,9 +437,14 @@ def train_stage1_gnn(
         history.append(row)
         ctx.log_metrics(row, step=epoch)
         ctx.log(
-            "epoch %d train_loss=%.4f raw_AP=%.4f refined_AP=%.4f delta_AP=%+.4f (primary) time=%.1fs",
+            "epoch %d train_total=%.4f (bce_w=%.4f dice_w=%.4f sym_w=%.4f) "
+            "val_total=%.4f raw_AP=%.4f refined_AP=%.4f delta_AP=%+.4f time=%.1fs",
             epoch,
             row["train_loss"],
+            row["train_bce_weighted"],
+            row["train_dice_weighted"],
+            row["train_sym_weighted"],
+            row["val_loss"],
             row["raw_sam_ap"],
             row["val_refined_ap"],
             row["delta_ap"],

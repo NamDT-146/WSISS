@@ -1,4 +1,6 @@
-Step 1: We will use all **80 COCO classes**. For computational feasibility, we will use the `coco-minitrain` 25k/10k subset for training, while retaining the standard COCO 2017 validation size.
+Step 1: We will use all **80 COCO classes**. For computational feasibility, we use **coco-minitrain-10k** (~10k train images) for student training splits; full COCO 2017 JSON/val images are used for annotations and paths.
+
+**Stage-1 GNN (P0.4):** trains on **`labeled_5pct` only** (~500 images from the 10k minitrain train list). The 95% weak split is not used until Stage-2.
 Dataset filtering will be handled dynamically during dataloader initialization. We will pass a `train.txt` and `val.txt` file containing the paths of the specific images to load:
 ```text
 ./images/train2017/000000337246.jpg
