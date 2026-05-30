@@ -32,6 +32,7 @@ from modules.wssis.proc_utils import run_subprocess
 STAGE2_IMS_PER_BATCH = 32
 STAGE2_BASE_LR = 0.0002
 STAGE2_ITERS_PER_EPOCH = 1000
+STAGE2_EARLY_STOP_PATIENCE = 10
 
 
 def _check_p0_artifacts(spec: ExperimentSpec) -> None:
@@ -162,6 +163,8 @@ WSSIS:
   WEAK_SIGNAL: "{spec.weak_signal}"
   USE_FULL_VAL_FINAL: true
   ITERS_PER_EPOCH: {STAGE2_ITERS_PER_EPOCH}
+  EARLY_STOPPING_PATIENCE: {STAGE2_EARLY_STOP_PATIENCE}
+  EARLY_STOPPING_MONITOR: segm/AP
 DATASETS:
   TRAIN: ("{train_ds}",)
   TEST: ("{val_ds}",)
@@ -243,6 +246,7 @@ weak: {paths['weak_95pct_txt'].as_posix()}
         data=str(data_yaml),
         epochs=spec.stage2_epochs,
         batch=32,
+        patience=STAGE2_EARLY_STOP_PATIENCE,
         project=str(out_dir),
         name="yolov8_seg",
         exist_ok=True,
