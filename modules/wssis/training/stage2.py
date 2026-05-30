@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
@@ -27,6 +26,7 @@ from modules.wssis.paths import (
     swin_tiny_checkpoint,
 )
 from modules.wssis.run_context import RunContext
+from modules.wssis.proc_utils import run_subprocess
 
 
 def _check_p0_artifacts(spec: ExperimentSpec) -> None:
@@ -172,6 +172,8 @@ SOLVER:
         str(train_net),
         "--num-gpus",
         os.environ.get("WSSIS_NUM_GPUS", "1"),
+        "--dist-url",
+        "auto",
         "--config-file",
         str(generated),
         "OUTPUT_DIR",
@@ -193,11 +195,13 @@ SOLVER:
         return
     _check_swin_weights()
     _check_mask2former_ops()
-    result = subprocess.run(cmd, cwd=str(m2f_root), env=env, check=False)
-    if result.returncode != 0:
+    result = run_subprocess(cmd, cwd=str(m2f_root), env=env)
+    if result != 0:
         raise RuntimeError(
-            f"Mask2Former training failed for experiment {spec.id} (exit {result.returncode}). "
-            "See log above; if import error, run: bash scripts/setup/03_compile_mask2former_ops.sh"
+            f"Mask2Former training failed for experiment {spec.id} (exit {result}). "
+            "See log above; if import error, run: bash scripts/setup/03_compile_mask2former_ops.sh\n"
+            "If GPUs still show memory in use after interrupt: "
+            "python -m modules.wssis.proc_utils"
         )
 
 

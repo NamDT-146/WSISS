@@ -11,6 +11,11 @@ warnings.filterwarnings(
     category=FutureWarning,
     message=r".*torch\.cuda\.amp\.(autocast|GradScaler).*",
 )
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    message=r".*timm\.models\.layers.*",
+)
 
 try:
     # ignore ShapelyDeprecationWarning from fvcore
@@ -315,28 +320,48 @@ def setup(args):
 
 
 def main(args):
-    cfg = setup(args)
+    try:
+        from modules.wssis.proc_utils import cleanup_distributed, install_worker_signal_handlers
+    except ImportError:
+        cleanup_distributed = None
+        install_worker_signal_handlers = None
 
-    if args.eval_only:
-        model = Trainer.build_model(cfg)
-        DetectionCheckpointer(model, save_dir=cfg.OUTPUT_DIR).resume_or_load(
-            cfg.MODEL.WEIGHTS, resume=args.resume
-        )
-        res = Trainer.test(cfg, model)
-        if cfg.TEST.AUG.ENABLED:
-            res.update(Trainer.test_with_TTA(cfg, model))
-        if comm.is_main_process():
-            verify_results(cfg, res)
-        return res
+    if install_worker_signal_handlers is not None:
+        install_worker_signal_handlers()
 
-    trainer = Trainer(cfg)
-    trainer.resume_or_load(resume=args.resume)
-    return trainer.train()
+    try:
+        cfg = setup(args)
+
+        if args.eval_only:
+            model = Trainer.build_model(cfg)
+            DetectionCheckpointer(model, save_dir=cfg.OUTPUT_DIR).resume_or_load(
+                cfg.MODEL.WEIGHTS, resume=args.resume
+            )
+            res = Trainer.test(cfg, model)
+            if cfg.TEST.AUG.ENABLED:
+                res.update(Trainer.test_with_TTA(cfg, model))
+            if comm.is_main_process():
+                verify_results(cfg, res)
+            return res
+
+        trainer = Trainer(cfg)
+        trainer.resume_or_load(resume=args.resume)
+        return trainer.train()
+    finally:
+        if cleanup_distributed is not None:
+            cleanup_distributed()
 
 
 if __name__ == "__main__":
+    try:
+        from modules.wssis.proc_utils import patch_detectron2_launch_cleanup
+    except ImportError:
+        patch_detectron2_launch_cleanup = None
+
     args = default_argument_parser().parse_args()
     print("Command Line Args:", args)
+    if patch_detectron2_launch_cleanup is not None:
+        patch_detectron2_launch_cleanup()
     launch(
         main,
         args.num_gpus,

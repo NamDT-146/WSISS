@@ -20,6 +20,15 @@ cd "$REPO_ROOT"
 source "$REPO_ROOT/scripts/lib/activate_wssis.sh"
 # shellcheck source=scripts/lib/detect_gpus.sh
 source "$REPO_ROOT/scripts/lib/detect_gpus.sh"
+# shellcheck source=scripts/lib/cleanup_gpu_workers.sh
+source "$REPO_ROOT/scripts/lib/cleanup_gpu_workers.sh"
+
+_wssis_cleanup_on_signal() {
+  echo "[cleanup] Stopping training workers..." >&2
+  wssis_kill_training_workers || true
+}
+trap _wssis_cleanup_on_signal INT TERM
+
 activate_wssis
 
 export WSSIS_REPO_ROOT="$REPO_ROOT"
