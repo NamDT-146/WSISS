@@ -15,7 +15,7 @@ import torch
 from tqdm import tqdm
 import numpy as np
 
-from modules.wssis.paths import checkpoints_dir, sam_vit_b_checkpoint
+from modules.wssis.paths import checkpoints_dir, sam_embeddings_dir, sam_vit_b_checkpoint
 from modules.wssis.run_context import EarlyStopping, RunContext, gpu_memory_mb
 
 
@@ -81,14 +81,15 @@ def _stage1_forward_batch(
     metas=None,
     active_signal=None,
     unified_weak_maps=True,
+    use_sam_cache: bool = True,
 ):
     """Run teacher (SAM decoder) + GNN refiner for one batch."""
     from modules.vig_refinenet.sam_stage1_common import (
         build_batch_prompts_from_masks,
         build_weak_signal_tensor,
         decode_sam_masks_3_batch,
-        encode_sam_embeddings,
     )
+    from modules.wssis.sam_cache import fetch_sam_embeddings_batch
     from modules.wssis.weak_prompts import sam_prompt_for_signal
 
     device = images.device
@@ -110,13 +111,21 @@ def _stage1_forward_batch(
         sam_prompts = prompts
 
     with torch.no_grad():
-        sam_embed = encode_sam_embeddings(sam, images, pixel_mean, pixel_std)
+        sam_embed, cache_stats = fetch_sam_embeddings_batch(
+            metas or [],
+            sam,
+            images,
+            pixel_mean,
+            pixel_std,
+            use_cache=use_sam_cache,
+        )
         sam_masks_3, sam_scores = decode_sam_masks_3_batch(
             sam,
             images,
             sam_prompts,
             mask_size=mask_size,
             prompt_space=mask_size,
+            image_embeddings=sam_embed,
         )
     weak_signal = build_weak_signal_tensor(
         prompts,
@@ -127,7 +136,13 @@ def _stage1_forward_batch(
         policy=prompt_policy,
     )
     refined_logits = refiner(sam_embed, images, sam_masks_3, weak_signal)
-    return refined_logits, sam_masks_3, sam_scores, gt_masks.repeat(1, 3, 1, 1)
+    return (
+        refined_logits,
+        sam_masks_3,
+        sam_scores,
+        gt_masks.repeat(1, 3, 1, 1),
+        cache_stats,
+    )
 
 
 def train_stage1_gnn(
@@ -228,6 +243,14 @@ def train_stage1_gnn(
         len(val_ds),
         paths["val_txt"],
     )
+    use_sam_cache = data_cfg.get("use_sam_embedding_cache", True)
+    if use_sam_cache and not sam_embeddings_dir().exists():
+        ctx.log(
+            "WARNING: SAM embedding cache missing (%s). Run P0.2 or set use_sam_embedding_cache=false.",
+            sam_embeddings_dir(),
+        )
+    elif use_sam_cache:
+        ctx.log("SAM embedding cache enabled (P0.2) — skips ViT-B encoder when npy exists")
     ctx.save_config(config)
 
     batch_size = training_cfg.get("batch_size", 4)
@@ -318,6 +341,7 @@ def train_stage1_gnn(
         refiner.train()
         train_totals = _loss_totals_template(with_sym=True)
         n_batches = 0
+        cache_epoch = {"cache_hits": 0, "cache_misses": 0, "unique_images": 0}
 
         train_pbar = tqdm(
             train_loader,
@@ -327,7 +351,7 @@ def train_stage1_gnn(
         )
         for images, masks, meta in train_pbar:
             images, masks = images.to(dev), masks.to(dev)
-            logits, _, _, gt3 = _stage1_forward_batch(
+            logits, _, _, gt3, cstats = _stage1_forward_batch(
                 sam,
                 refiner,
                 images,
@@ -339,7 +363,10 @@ def train_stage1_gnn(
                 signal_type,
                 metas=meta,
                 unified_weak_maps=True,
+                use_sam_cache=use_sam_cache,
             )
+            for k in cache_epoch:
+                cache_epoch[k] += cstats.get(k, 0)
             loss = criterion(logits, gt3)
             sym_val = 0.0
             if sym_w > 0:
@@ -367,6 +394,14 @@ def train_stage1_gnn(
             )
 
         train_mean = _mean_losses(train_totals, n_batches)
+        if n_batches and use_sam_cache:
+            ctx.log(
+                "epoch %d SAM cache: hits=%d misses=%d unique_images=%d",
+                epoch,
+                cache_epoch["cache_hits"],
+                cache_epoch["cache_misses"],
+                cache_epoch["unique_images"],
+            )
 
         refiner.eval()
         val_totals = _loss_totals_template(with_sym=False)
@@ -381,7 +416,7 @@ def train_stage1_gnn(
         with torch.no_grad():
             for images, masks, meta in val_pbar:
                 images, masks = images.to(dev), masks.to(dev)
-                logits, sam_masks_3, sam_scores, gt3 = _stage1_forward_batch(
+                logits, sam_masks_3, sam_scores, gt3, _ = _stage1_forward_batch(
                     sam,
                     refiner,
                     images,
@@ -393,6 +428,7 @@ def train_stage1_gnn(
                     signal_type,
                     metas=meta,
                     unified_weak_maps=True,
+                    use_sam_cache=use_sam_cache,
                 )
                 comps = _loss_components(criterion, logits, gt3)
                 _accumulate_losses(val_totals, comps)
@@ -493,6 +529,7 @@ def train_stage1_gnn(
                 output_dir=ctx.viz_dir,
                 num_samples=viz_samples,
                 policy=prompt_policy_val,
+                use_sam_cache=use_sam_cache,
             )
 
         epoch_pbar.set_postfix(

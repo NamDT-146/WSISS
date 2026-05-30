@@ -35,6 +35,8 @@ def _build_config(
             "train_image_txt": str(paths["labeled_5pct_txt"]),
             "val_split": "val_all",
             "val_image_txt": str(paths["val_all_txt"]),
+            # P0.2 npy cache — major speedup vs re-encoding SAM every instance
+            "use_sam_embedding_cache": True,
         },
         "model": {
             "sam_channels": 256,

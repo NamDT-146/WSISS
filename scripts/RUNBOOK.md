@@ -157,6 +157,23 @@ python -m modules.wssis.prep.train_stage1_gnn --run-id $WSSIS_RUN_ID \
   --symmetric-weight 0 --output-name gnn_refiner_no_sym.pt
 ```
 
+### Why Stage-1 train/val feels slow
+
+Each batch runs **SAM mask decoder** (per instance) + **GNN**. Without P0.2 cache, it also ran **SAM ViT-B encoder** every step — often **many times per image** (one dataloader row per COCO instance).
+
+| Factor | Effect |
+|--------|--------|
+| **Instance-level dataset** | ~500 labeled images → **thousands** of train steps/epoch (multiple objects per image) |
+| **Val on full `val_all`** | Many more val batches than train |
+| **Large `batch_size`** (e.g. 16) | More serial SAM decoder calls per batch |
+| **No P0.2 cache** (old runs) | Re-encoded every instance; very slow |
+
+**Speedups (current code):** `use_sam_embedding_cache=true` (default) loads `data/cache/sam_embeddings/{train,val}/*.fp16.npy` from P0.2 and deduplicates encoder work by `image_id` within a batch. Used in **Stage-1 train/val**, **teacher eval**, and **epoch visualizations**. **Run P0.2 before P0.4** for best speed.
+
+**Intentional live encoder:** only `precompute_sam_embeddings` (P0.2) and cache-miss fallback in `modules/wssis/sam_cache.py`.
+
+**Further knobs:** lower `--batch-size` if OOM; `--max-instances` for debugging; ensure P0.2 finished on `train_all` + `val_all`.
+
 ### Stage-1 data split (supervised 5% only)
 
 P0.1 builds splits from **coco-minitrain-10k** (`train2017.txt` → `train_all.txt`, then `labeled_5pct.txt` ≈ 500 images).  

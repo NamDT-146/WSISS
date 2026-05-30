@@ -280,6 +280,7 @@ def decode_sam_masks_3_batch(
     prompts: list,
     mask_size: int = 256,
     prompt_space: Optional[int] = None,
+    image_embeddings: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Run SAM prompt decoder → 3 proposal masks per sample.
@@ -289,6 +290,7 @@ def decode_sam_masks_3_batch(
         prompts: list of prompt dicts (point/bbox in prompt_space coords).
         mask_size: output spatial size for GNN input.
         prompt_space: resolution prompts were built in (defaults to mask_size).
+        image_embeddings: optional [B, 256, 64, 64] from P0.2 cache (skips encoder in set_image).
 
     Returns:
         sam_masks: [B, 3, mask_size, mask_size] float in {0, 1}
@@ -304,12 +306,21 @@ def decode_sam_masks_3_batch(
 
     predictor = SamPredictor(sam_model)
     for i in range(B):
-        img_np = (
-            images[i].permute(1, 2, 0).detach().cpu().numpy().clip(0, 1) * 255
-        ).astype(np.uint8)
         scaled = _scale_prompt_to_image(prompts[i], prompt_space, H)
 
-        predictor.set_image(img_np)
+        if image_embeddings is not None:
+            predictor.reset_image()
+            predictor.original_size = (H, W)
+            predictor.input_size = (H, W)
+            predictor.features = image_embeddings[i : i + 1].to(
+                device=predictor.device, dtype=next(sam_model.parameters()).dtype
+            )
+            predictor.is_image_set = True
+        else:
+            img_np = (
+                images[i].permute(1, 2, 0).detach().cpu().numpy().clip(0, 1) * 255
+            ).astype(np.uint8)
+            predictor.set_image(img_np)
 
         point_coords = None
         point_labels = None

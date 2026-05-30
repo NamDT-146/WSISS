@@ -43,8 +43,8 @@ def _forward_teacher_batch(
         build_batch_prompts_from_masks,
         build_weak_signal_tensor,
         decode_sam_masks_3_batch,
-        encode_sam_embeddings,
     )
+    from modules.wssis.sam_cache import fetch_sam_embeddings_batch
     from modules.wssis.weak_prompts import sam_prompt_for_signal
 
     device = images.device
@@ -61,13 +61,21 @@ def _forward_teacher_batch(
     sam_prompts = [sam_prompt_for_signal(p, active_signal) for p in prompts]
 
     with torch.no_grad():
-        sam_embed = encode_sam_embeddings(sam, images, pixel_mean, pixel_std)
+        sam_embed, _ = fetch_sam_embeddings_batch(
+            metas,
+            sam,
+            images,
+            pixel_mean,
+            pixel_std,
+            use_cache=True,
+        )
         sam_masks_3, sam_scores = decode_sam_masks_3_batch(
             sam,
             images,
             sam_prompts,
             mask_size=mask_size,
             prompt_space=mask_size,
+            image_embeddings=sam_embed,
         )
 
     refined_logits = None

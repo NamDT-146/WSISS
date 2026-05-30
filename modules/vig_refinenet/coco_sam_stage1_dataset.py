@@ -152,7 +152,7 @@ class CocoSamStage1Dataset(Dataset):
         mask_t = torch.from_numpy(np.array(mask_img)).float().unsqueeze(0) / 255.0
         mask_t = (mask_t > 0.5).float()
 
-        meta = {"image_id": img_id, "ann_id": ann["id"]}
+        meta = {"image_id": img_id, "ann_id": ann["id"], "split": self.split}
         return image_t, mask_t, meta
 
     def get_raw_pair(self, idx: int):
@@ -178,6 +178,7 @@ class CocoSamStage1Dataset(Dataset):
         meta = {
             "image_id": img_id,
             "ann_id": ann["id"],
+            "split": self.split,
             "orig_size": (h, w),
         }
         return image_rgb, mask_np.astype(np.uint8), meta

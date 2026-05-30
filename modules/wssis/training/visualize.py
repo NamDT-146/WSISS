@@ -70,48 +70,58 @@ def _draw_weak_signal_cv2(image_rgb: np.ndarray, prompts: dict) -> np.ndarray:
 
 
 def sam_masks_from_prompts(
-    sam_model,
-    image_rgb: np.ndarray,
+    sam_model: torch.nn.Module,
     prompts: dict,
+    *,
+    image_tensor: torch.Tensor,
+    meta: dict,
+    pixel_mean: torch.Tensor,
+    pixel_std: torch.Tensor,
+    target_hw: Tuple[int, int],
+    mask_size: int = 256,
+    use_cache: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Run SAM prompt decoder via SamPredictor.
+    Run SAM prompt decoder using P0.2 cached embeddings when available.
 
     Returns:
-        best_mask: [H, W] bool — highest-scoring of 3 multimask outputs
-        pseudo_mask: [H, W] bool — 2/3 vote agreement (pseudo-label)
+        best_mask: [H, W] bool at target_hw
+        pseudo_mask: [H, W] bool — 2/3 vote agreement at target_hw
     """
-    from segment_anything import SamPredictor
+    import cv2
 
-    predictor = SamPredictor(sam_model)
-    predictor.set_image(image_rgb)
+    from modules.vig_refinenet.sam_stage1_common import decode_sam_masks_3_batch
+    from modules.wssis.sam_cache import fetch_sam_embeddings_batch
 
-    point_coords = None
-    point_labels = None
-    box = None
+    with torch.no_grad():
+        embed, _ = fetch_sam_embeddings_batch(
+            [meta],
+            sam_model,
+            image_tensor,
+            pixel_mean,
+            pixel_std,
+            use_cache=use_cache,
+        )
+        sam_masks_3, scores = decode_sam_masks_3_batch(
+            sam_model,
+            image_tensor,
+            [prompts],
+            mask_size=mask_size,
+            prompt_space=mask_size,
+            image_embeddings=embed,
+        )
 
-    if "point" in prompts:
-        point_coords = np.array([prompts["point"]], dtype=np.float32)
-        point_labels = np.array([1], dtype=np.int32)
-    if "bbox" in prompts:
-        x, y, bw, bh = prompts["bbox"]
-        box = np.array([x, y, x + bw, y + bh], dtype=np.float32)
+    best_idx = int(scores[0].argmax().item())
+    best = (sam_masks_3[0, best_idx].cpu().numpy() > 0.5).astype(np.uint8)
+    votes = (sam_masks_3[0].cpu().numpy() > 0.5).astype(np.float32).sum(axis=0)
+    pseudo = (votes >= 2).astype(np.uint8)
 
-    masks, scores, _ = predictor.predict(
-        point_coords=point_coords,
-        point_labels=point_labels,
-        box=box,
-        multimask_output=True,
-    )
-    # masks: [C, H, W]
-    best_idx = int(np.argmax(scores))
-    best_mask = masks[best_idx] > 0
+    th, tw = target_hw
+    if best.shape != (th, tw):
+        best = cv2.resize(best, (tw, th), interpolation=cv2.INTER_NEAREST) > 0
+        pseudo = cv2.resize(pseudo, (tw, th), interpolation=cv2.INTER_NEAREST) > 0
 
-    binary = (masks > 0).astype(np.float32)
-    votes = binary.sum(axis=0)
-    pseudo_mask = votes >= 2
-
-    return best_mask, pseudo_mask
+    return best, pseudo
 
 
 def gnn_mask_from_inputs(
@@ -119,31 +129,40 @@ def gnn_mask_from_inputs(
     sam_model: torch.nn.Module,
     image_tensor: torch.Tensor,
     prompts: dict,
+    meta: dict,
     pixel_mean: torch.Tensor,
     pixel_std: torch.Tensor,
     target_hw: Tuple[int, int],
     mask_size: int = 256,
+    use_cache: bool = True,
 ) -> np.ndarray:
     """GNN refined mask at original image resolution (PLAN §2 pipeline)."""
     from modules.vig_refinenet.sam_stage1_common import (
         build_weak_signal_tensor,
         decode_sam_masks_3_batch,
-        encode_sam_embeddings,
     )
+    from modules.wssis.sam_cache import fetch_sam_embeddings_batch
+    from modules.wssis.weak_prompts import sam_prompt_for_signal
 
     device = image_tensor.device
     mask_np = np.zeros((mask_size, mask_size), dtype=np.uint8)
     with torch.no_grad():
-        embed = encode_sam_embeddings(sam_model, image_tensor, pixel_mean, pixel_std)
-        from modules.wssis.weak_prompts import sam_prompt_for_signal
-
+        embed, _ = fetch_sam_embeddings_batch(
+            [meta],
+            sam_model,
+            image_tensor,
+            pixel_mean,
+            pixel_std,
+            use_cache=use_cache,
+        )
         sam_prompt = sam_prompt_for_signal(prompts, "points_only")
         sam_masks_3, _ = decode_sam_masks_3_batch(
             sam_model,
             image_tensor,
             [sam_prompt],
             mask_size=mask_size,
-            prompt_space=image_tensor.shape[-1],
+            prompt_space=mask_size,
+            image_embeddings=embed,
         )
         weak_signal = build_weak_signal_tensor(
             [prompts],
@@ -203,6 +222,7 @@ def visualize_stage1_epoch(
     sample_indices: Optional[Sequence[int]] = None,
     num_samples: int = 4,
     policy: str = "val_fixed",
+    use_sam_cache: bool = True,
 ) -> Path:
     """
     Save 1×5 refinement grids for fixed val samples after each epoch.
@@ -237,23 +257,40 @@ def visualize_stage1_epoch(
         prompts_1024 = build_instance_prompts(mask1024 > 0, policy=policy, signal_type="mixed")
         weak_vis = _draw_weak_signal_cv2(image_rgb, prompts_orig)
 
+        image_t = torch.from_numpy(img1024).permute(2, 0, 1).float().div(255.0).unsqueeze(0).to(device)
+        viz_meta = {
+            "image_id": meta["image_id"],
+            "ann_id": meta["ann_id"],
+            "split": meta.get("split", getattr(dataset, "split", "val")),
+        }
         try:
-            sam_mask, pseudo_sam = sam_masks_from_prompts(sam_model, image_rgb, prompts_orig)
+            sam_mask, pseudo_sam = sam_masks_from_prompts(
+                sam_model,
+                prompts_1024,
+                image_tensor=image_t,
+                meta=viz_meta,
+                pixel_mean=pixel_mean,
+                pixel_std=pixel_std,
+                target_hw=(h, w),
+                mask_size=256,
+                use_cache=use_sam_cache,
+            )
         except Exception as e:
             print(f"[viz] SAM predict failed for idx {ds_idx}: {e}")
             sam_mask = np.zeros((h, w), dtype=bool)
             pseudo_sam = sam_mask.copy()
 
-        image_t = torch.from_numpy(img1024).permute(2, 0, 1).float().div(255.0).unsqueeze(0).to(device)
         gnn_mask = gnn_mask_from_inputs(
             refiner,
             sam_model,
             image_t,
             prompts_1024,
+            viz_meta,
             pixel_mean,
             pixel_std,
             target_hw=(h, w),
             mask_size=256,
+            use_cache=use_sam_cache,
         )
 
         gt_mask = mask_np > 0
