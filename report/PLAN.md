@@ -124,29 +124,30 @@ After every run: COCO AP, AP50, AP75, AP_S/M/L + qualitative grids ([EXPERIMENT.
 
 **File:** `modules/vig_refinenet/train_sam_gnn_stage1_kaggle.ipynb`
 
-**Problem:** Train/val currently run `refiner(sam_embed)` only — the GNN acts as a standalone segmentation head on image embeddings. The intended pipeline (§2 below) is:
+**Problem:** Train/val previously ran `refiner(sam_embed)` only — the GNN acted as a standalone segmentation head on image embeddings. The intended pipeline (§2 below) is:
 
 ```
-SAM embed → SAM prompt decoder (weak prompts) → 3 raw masks → GNN refiner → 3 refined masks
+SAM embed (node init only) + image + weak prompts + SAM decoder → 3 raw masks → GNN refiner → 3 refined masks
 ```
 
-What the notebook does instead:
+What the old notebook did instead:
 
 ```python
 sam_embed = encode_sam_embeddings(sam_model, images, ...)
-logits = refiner(sam_embed)   # no prompts, no SAM decoder, 1 mask not 3
+logits = refiner(sam_embed)   # no image, no prompts, no SAM decoder, 1 mask not 3
 ```
 
 **Why this is wrong:**
-- The GNN is a **refiner**, not a full segmenter. Without prompt conditioning and SAM decoder masks, it cannot learn the intended refinement behavior and metrics overstate capability.
-- `SamStage1Refiner.forward()` only accepts `sam_embed` ([sam_stage1_refiner.py](../modules/vig_refinenet/sam_stage1_refiner.py)); it does not take `weak_prompts` or `sam_masks_3` as PLAN specifies.
-- Validation compares GNN-only output to GT — not **refined vs raw SAM**, so improvement from refinement is invisible.
+- The GNN is a **refiner**, not a full segmenter. SAM embedding must **initialize first-layer graph nodes only**; trainable inputs are the **RGB image**, **3 SAM proposal masks**, and **weak-signal map**.
+- Without prompt conditioning and SAM decoder masks, it cannot learn the intended refinement behavior and metrics overstate capability.
+- `SamStage1Refiner.forward()` must accept `(sam_embed, images, sam_masks_3, weak_signal)` and output `[B, 3, 256, 256]` ([sam_stage1_refiner.py](../modules/vig_refinenet/sam_stage1_refiner.py)).
+- Validation must compare **raw SAM vs refined** — not GNN-only output vs GT — so improvement from refinement is visible in IoU and instance-seg **AP**.
 
 **Fix checklist (P0.3):**
-1. Extend `SamStage1Refiner` to accept `(sam_embed, weak_prompts, sam_masks_3)` and output `[B, 3, 256, 256]`.
+1. Extend `SamStage1Refiner`: `sam_embed` → node init; fuse image + `sam_masks_3` + weak signal → GNN → `[B, 3, 256, 256]`.
 2. Wire SAM prompt decoder in train/val loops (prompts from GT boxes/points on 5% labeled data).
 3. Add symmetric loss; supervise all 3 refined masks against GT.
-4. Val metrics: report **raw SAM IoU**, **refined IoU**, and **Δ improvement** on fixed val prompts.
+4. Val metrics: **raw SAM AP**, **refined AP**, **ΔAP** (+ IoU); on fixed val prompts.
 5. Visualization: 1×5 grid — image → weak signal → raw SAM → GNN refined → GT.
 
 Until P0.3 is done, do **not** reuse `sam_stage1_refiner.pt` for Stage 2 or report Stage-1 numbers in the paper.
@@ -187,7 +188,11 @@ Cross-Resolution Feature Alignment (SAM-KD / MobileSAM style).
 
 1. Load cached SAM embedding `[256, 64, 64]` (or encode once if cache miss).
 2. Weak signals (points/boxes from GT) prompt the SAM Decoder → 3 masks at `256x256`.
-3. GNN Refiner takes `(sam_embed, weak_prompts, sam_masks_3)` → 3 refined masks at `256x256`.
+3. GNN Refiner takes `(sam_embed, images, sam_masks_3, weak_signal)` → 3 refined masks at `256x256`.
+   - `sam_embed`: frozen SAM encoder output — **node initialization for layer 1 only**
+   - `images`: RGB input at training resolution
+   - `sam_masks_3`: 3 SAM decoder proposals from weak prompts
+   - `weak_signal`: spatial map of point/bbox prompts
 4. Interpolate to `640x640` for metric calculation.
 
 **Stage 1 Losses:**
@@ -276,7 +281,7 @@ for images, weak_prompts, gt_masks in dataloader_5percent:
         sam_embed = load_cached_embedding(image_ids)  # or encode_sam_embeddings(...)
         sam_masks_3 = sam.prompt_decoder(sam_embed, weak_prompts)  # [B, 3, 256, 256]
 
-    refined_masks_3 = gnn_refiner(sam_embed, weak_prompts, sam_masks_3)
+    refined_masks_3 = gnn_refiner(sam_embed, images, sam_masks_3, weak_signal)
     refined_640 = F.interpolate(refined_masks_3, size=(640, 640), mode='bilinear')
 
     loss_seg = calc_dice_bce(refined_640, gt_masks.unsqueeze(1).repeat(1, 3, 1, 1))

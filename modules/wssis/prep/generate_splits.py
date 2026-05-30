@@ -120,7 +120,7 @@ def run(
             continue
         info = val_images[img_id]
         mask = _ann_to_mask(ann, info["height"], info["width"])
-        prompts = build_instance_prompts(mask, policy="val_fixed")
+        prompts = build_instance_prompts(mask, policy="val_fixed", ann_id=ann["id"])
         key = str(img_id)
         if key not in val_prompts:
             val_prompts[key] = {"instances": []}

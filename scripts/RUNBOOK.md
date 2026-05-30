@@ -92,8 +92,17 @@ python -m modules.wssis.prep.download_kaggle --skip-minitrain
 
 ## Step 4 — P0 preparation (once)
 
+Pick a **run id** (all logs/checkpoints/viz go to one bundle):
+
 ```bash
-bash scripts/prep/run_p0.sh
+export WSSIS_RUN_ID=wssis_main
+bash scripts/prep/run_p0.sh --run-id $WSSIS_RUN_ID
+```
+
+**Resume after interrupt** (skips completed steps in `progress.json`):
+
+```bash
+bash scripts/prep/run_p0.sh --run-id $WSSIS_RUN_ID --resume --skip-splits --skip-embeddings
 ```
 
 Or step-by-step:
@@ -102,28 +111,39 @@ Or step-by-step:
 |------|---------|--------|
 | P0.1 | `python -m modules.wssis.prep.generate_splits` | `data/splits/*` |
 | P0.2 | `python -m modules.wssis.prep.precompute_sam_embeddings` | `data/cache/sam_embeddings/` (~23 GB) |
-| P0.4 | `python -m modules.wssis.prep.train_stage1_gnn --epochs 20` | `checkpoints/gnn_refiner_stage1.pt` |
+| P0.4 | `python -m modules.wssis.prep.train_stage1_gnn --run-id $WSSIS_RUN_ID --epochs 20` | `outputs/runs/<id>/checkpoints/best.pt` + legacy `checkpoints/gnn_refiner_stage1.pt` |
 
-**Visualizations:** Every epoch writes grids to `outputs/stage1/<run_name>/visualizations/` (5 panels: image, weak signal, raw SAM, GNN refined, GT). Disable with config `"visualization": {"enabled": false}`.
+### Logging & checkpoints (Stage-1)
+
+| Feature | Location |
+|---------|----------|
+| Per-epoch losses + **AP (primary): raw_sam_ap, val_refined_ap, delta_ap** | `outputs/runs/<id>/logs/metrics.jsonl` |
+| Text log | `logs/train.log` |
+| TensorBoard | `logs/tensorboard/` |
+| WandB | Set `WANDB_PROJECT=wssis` |
+| `last.pt` / `best.pt` / `epoch_XXX.pt` | `checkpoints/` |
+| Early stopping (patience=10 on val_refined_ap) | enabled by default; `--no-early-stop` to disable |
+| Resume training | `--resume` loads `checkpoints/last.pt` |
+
+**Visualizations:** Every epoch → `outputs/runs/<id>/visualizations/` (5 panels). Report bundle → `outputs/runs/<id>/report/`.
 
 **Debug (small subset):**
 
 ```bash
 python -m modules.wssis.prep.precompute_sam_embeddings --limit 32
-python -m modules.wssis.prep.train_stage1_gnn --epochs 2 --max-instances 500
+python -m modules.wssis.prep.train_stage1_gnn --run-id debug --epochs 2 --max-instances 500
 ```
 
 **Exp 2C (no symmetric loss GNN):**
 
 ```bash
-python -m modules.wssis.prep.train_stage1_gnn \
-  --symmetric-weight 0 \
-  --output-name gnn_refiner_no_sym.pt
+python -m modules.wssis.prep.train_stage1_gnn --run-id $WSSIS_RUN_ID \
+  --symmetric-weight 0 --output-name gnn_refiner_no_sym.pt
 ```
 
 ### Known limitation (PLAN §0.5)
 
-Stage-1 currently trains GNN on SAM embeddings only (no SAM prompt decoder / 3-mask refinement). Fix before reporting Stage-1 metrics. Stage-2 experiment configs are still generated correctly.
+Stage-1 GNN now follows PLAN §2: SAM embed initializes graph nodes; inputs are image + 3 SAM masks + weak signal. Val logs **raw SAM AP**, **refined AP**, and **ΔAP**. Re-train P0.4 after pulling this change (old `sam_embed`-only checkpoints are incompatible).
 
 ---
 
@@ -138,9 +158,16 @@ python -m modules.wssis.run_experiment --list
 ### Main result first (Exp 1C)
 
 ```bash
-python scripts/experiments/run_exp_1c.py
+python -m modules.wssis.run_experiment --exp 1C --run-id $WSSIS_RUN_ID
 # or
-python -m modules.wssis.run_experiment --exp 1C --stage train
+python scripts/experiments/run_exp_1c.py
+```
+
+### Upload Exp 1C best weights to Hugging Face (demo)
+
+```bash
+huggingface-cli login
+python scripts/upload_exp_1c_hf.py --repo-id YOUR_USER/wssis-1c-demo --run-id $WSSIS_RUN_ID
 ```
 
 ### Single experiment
@@ -168,32 +195,58 @@ python -m modules.wssis.run_experiment --exp 1C --stage train --dry-run
 ### Run all experiments (PLAN order)
 
 ```bash
-bash scripts/experiments/run_all_experiments.sh --with-p0   # includes P0 if needed
-# without P0:
-bash scripts/experiments/run_all_experiments.sh
+export WSSIS_RUN_ID=wssis_main
+bash scripts/experiments/run_all_experiments.sh --with-p0 --run-id $WSSIS_RUN_ID
+# resume after interrupt:
+bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID --resume
 ```
 
 Order: **1C → 1A → 1B → 1D → 2A → 2B → 2C → 3A → 3B → 3C → 4A**
 
-Outputs: `outputs/experiments/<ID>/experiment_config.json` (+ Mask2Former/YOLO artifacts)
+Outputs: `outputs/runs/<run_id>/experiments/<ID>/` + **`outputs/runs/<run_id>/report/`** for upload
 
 ---
 
 ## Step 6 — Logging & evaluation
 
-During training (see [EXPERIMENT.md](../report/EXPERIMENT.md)):
-- `sup_loss`, `semi_loss`, `distill_loss`
+**Primary metric: COCO instance-segmentation mask AP.** IoU/Dice are auxiliary (GNN training only). Student eval uses full COCO AP, AP50, AP75, AP_S, AP_M, AP_L.
+
+Progress tracker: **[CHECKLIST.md](CHECKLIST.md)**
+
+Log during training:
+- `sup_loss`, `semi_loss`, `distill_loss` (Stage-2, when integrated)
 - GNN `sym_loss`, `partial_ce`, agreement rate
 - GPU memory, time/epoch
 
-Use WandB:
+Use WandB (optional):
 
 ```bash
 export WANDB_PROJECT=wssis
 wandb login
 ```
 
-After each experiment, run COCO eval (AP, AP50, AP75, AP_S/M/L) and save qualitative grids.
+### Teacher eval on val (raw SAM + GNN-refined, all 3 weak-signal types)
+
+After P0.4 (GNN trained on labeled_5pct with unified point+box+scribble maps):
+
+```bash
+bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID
+# raw SAM only:
+bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID --raw-only
+# or:
+python -m modules.wssis.training.evaluate_teacher --run-id $WSSIS_RUN_ID
+```
+
+Output: `outputs/runs/<id>/eval/teacher_val_report.json` with AP/AP50 per signal type:
+`boxes_only`, `points_only`, `scribbles_only` for both `raw_sam` and `gnn_refined`.
+
+Weak-signal maps are 1×H×W tensors (stacked as 3 channels): point/scribble use Gaussian widening; box uses uniform fill inside bbox.
+
+Or via experiment runner:
+
+```bash
+python -m modules.wssis.run_experiment --exp 1C --stage eval --run-id $WSSIS_RUN_ID
+```
 
 ---
 
@@ -207,10 +260,9 @@ wssis/
 │   ├── coco_minitrain_10k/
 │   ├── splits/              # P0.1
 │   └── cache/sam_embeddings/  # P0.2
-├── checkpoints/
-│   ├── sam_vit_b_01ec64.pth
-│   └── gnn_refiner_stage1.pt
-├── outputs/experiments/
+├── checkpoints/             # legacy symlinks / copies of best.pt
+├── outputs/runs/<run_id>/   # ONE bundle for report (logs, viz, ckpt, report/)
+├── outputs/experiments/     # legacy (prefer runs/<id>/experiments/)
 ├── modules/
 │   ├── wssis/               # unified orchestration
 │   ├── vig_refinenet/
@@ -242,10 +294,14 @@ wssis/
 ```bash
 conda activate wssis
 export WSSIS_REPO_ROOT=$(pwd) PYTHONPATH=$(pwd)
+export WSSIS_RUN_ID=wssis_main
 
 bash scripts/setup/00_create_conda_env.sh
 cp ~/.kaggle/kaggle.json data/kaggle.json
 bash scripts/setup/01_download_data.sh
-bash scripts/prep/run_p0.sh
-python scripts/experiments/run_exp_1c.py
+bash scripts/prep/run_p0.sh --run-id $WSSIS_RUN_ID
+bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID
+python -m modules.wssis.run_experiment --exp 1C --run-id $WSSIS_RUN_ID --stage all
+# zip outputs/runs/$WSSIS_RUN_ID/report/ for submission
+# Full checklist: scripts/CHECKLIST.md
 ```

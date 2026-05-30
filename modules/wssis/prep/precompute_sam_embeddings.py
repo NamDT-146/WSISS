@@ -21,6 +21,7 @@ from modules.wssis.paths import (
     sam_embeddings_dir,
     sam_vit_b_checkpoint,
 )
+from modules.wssis.run_context import RunContext
 
 
 def _image_ids_from_txt(txt: Path) -> list[int]:
@@ -47,6 +48,7 @@ def run(
     batch_size: int = 1,
     limit: int | None = None,
     force: bool = False,
+    run_ctx: RunContext | None = None,
 ) -> None:
     ensure_dirs()
     paths = build_coco_paths()
@@ -94,7 +96,9 @@ def run(
     if limit:
         jobs = jobs[:limit]
 
-    for split, image_id in tqdm(jobs, desc="SAM embeddings"):
+    total = len(jobs)
+
+    for idx, (split, image_id) in enumerate(tqdm(jobs, desc="SAM embeddings"), start=1):
         key = f"{image_id:012d}"
         out_dir = sam_embeddings_dir() / split
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -121,7 +125,16 @@ def run(
             "sam_input_size": 1024,
         }
 
+        if run_ctx is not None and idx % 50 == 0:
+            run_ctx.update_step(
+                "p0_embeddings",
+                {"status": "running", "done": idx, "total": total},
+            )
+
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    if run_ctx is not None:
+        run_ctx.update_step("p0_embeddings", {"status": "done", "done": total, "total": total})
+        run_ctx.log("P0.2 embeddings: %d entries", len(manifest))
     print(f"[P0.2] Wrote {len(manifest)} entries to {manifest_path}")
 
 

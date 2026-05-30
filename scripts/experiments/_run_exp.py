@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
-"""Helper: python scripts/experiments/_run_exp.py 1C [--stage train] [--dry-run]"""
+"""
+Helper for experiment scripts.
+
+  python scripts/experiments/_run_exp.py 1C [--stage train|eval|all] [--run-id ID] [--dry-run] [--resume]
+
+Uses WSSIS_RUN_ID from the environment when --run-id is omitted.
+"""
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -11,6 +18,17 @@ sys.path.insert(0, str(REPO))
 from modules.wssis.run_experiment import main
 
 if __name__ == "__main__":
-    exp_id = sys.argv[1] if len(sys.argv) > 1 else "1C"
-    extra = sys.argv[2:]
-    main(["--exp", exp_id, "--stage", "all", *extra])
+    args = sys.argv[1:]
+    if not args or args[0].startswith("-"):
+        exp_id = "1C"
+    else:
+        exp_id = args[0]
+        args = args[1:]
+
+    if "--stage" not in args:
+        args = ["--stage", "all", *args]
+
+    if "--run-id" not in args and os.environ.get("WSSIS_RUN_ID"):
+        args = ["--run-id", os.environ["WSSIS_RUN_ID"], *args]
+
+    main(["--exp", exp_id, *args])

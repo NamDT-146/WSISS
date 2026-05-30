@@ -170,6 +170,202 @@ def compute_dice(
     return 2.0 * intersection / total
 
 
+# COCO instance-seg IoU thresholds for mask AP (0.50:0.05:0.95)
+COCO_MASK_IOU_THRESHOLDS = tuple(round(t, 2) for t in np.arange(0.5, 1.0, 0.05).tolist())
+
+
+def mask_ap_from_iou(iou: float, thresholds=COCO_MASK_IOU_THRESHOLDS) -> float:
+    """Per-instance mask AP contribution (fraction of thresholds met)."""
+    return float(np.mean([iou >= t for t in thresholds]))
+
+
+def symmetric_loss(logits: torch.Tensor) -> torch.Tensor:
+    """Pairwise MSE between 3 refined mask logits [B, 3, H, W]."""
+    if logits.dim() == 3:
+        logits = logits.unsqueeze(1)
+    if logits.shape[1] < 2:
+        return torch.tensor(0.0, device=logits.device)
+    p = torch.sigmoid(logits)
+    m1, m2, m3 = p[:, 0], p[:, 1], p[:, 2]
+    return (F.mse_loss(m1, m2) + F.mse_loss(m2, m3) + F.mse_loss(m1, m3)) / 3.0
+
+
+def _scale_prompt_to_image(
+    prompts: dict, prompt_space: int, image_space: int
+) -> dict:
+    """Scale point/bbox from mask resolution to image resolution."""
+    if prompt_space == image_space:
+        return dict(prompts)
+    scale = image_space / float(prompt_space)
+    out = dict(prompts)
+    if "point" in out:
+        out["point"] = [out["point"][0] * scale, out["point"][1] * scale]
+    if "bbox" in out:
+        b = out["bbox"]
+        out["bbox"] = [b[0] * scale, b[1] * scale, b[2] * scale, b[3] * scale]
+    return out
+
+
+def build_batch_prompts_from_masks(
+    masks: torch.Tensor,
+    policy: str = "train_online",
+    signal_type: str = "mixed",
+    metas: Optional[list] = None,
+) -> list:
+    """Build weak prompt dicts from GT masks [B, 1, H, W]."""
+    from modules.wssis.weak_prompts import build_instance_prompts
+
+    prompts = []
+    for i in range(masks.shape[0]):
+        mask_np = (masks[i, 0].detach().cpu().numpy() > 0.5).astype(np.uint8)
+        ann_id = None
+        if metas and i < len(metas):
+            ann_id = metas[i].get("ann_id")
+        prompts.append(
+            build_instance_prompts(
+                mask_np,
+                policy=policy,
+                signal_type=signal_type,
+                ann_id=ann_id,
+            )
+        )
+    return prompts
+
+
+def build_weak_signal_tensor(
+    prompts: list,
+    spatial_size: int,
+    device: torch.device,
+    mask_np_list: Optional[list] = None,
+    active_signal: Optional[str] = None,
+    policy: str = "val_fixed",
+    gaussian_sigma: float = 4.0,
+) -> torch.Tensor:
+    """
+    Rasterize weak prompts to [B, 3, H, W]:
+      ch0 — point (Gaussian), ch1 — box (uniform fill), ch2 — scribble (Gaussian-widened).
+
+    Unified training (``active_signal=None``): all three channels populated.
+    Per-type eval: pass ``active_signal`` in {'boxes_only','points_only','scribbles_only'}.
+    """
+    from modules.wssis.weak_prompts import rasterize_weak_signal_maps
+
+    batch = []
+    for i, p in enumerate(prompts):
+        mask_np = None
+        if mask_np_list and i < len(mask_np_list):
+            mask_np = mask_np_list[i]
+        elif spatial_size and "bbox" in p:
+            mask_np = np.zeros((spatial_size, spatial_size), dtype=np.uint8)
+        else:
+            mask_np = np.zeros((spatial_size, spatial_size), dtype=np.uint8)
+
+        maps = rasterize_weak_signal_maps(
+            mask_np,
+            p,
+            spatial_size=spatial_size,
+            active_signal=active_signal,
+            policy=policy,
+            gaussian_sigma=gaussian_sigma,
+        )
+        batch.append(maps)
+
+    return torch.from_numpy(np.stack(batch, axis=0)).to(device)
+
+
+@torch.no_grad()
+def decode_sam_masks_3_batch(
+    sam_model: nn.Module,
+    images: torch.Tensor,
+    prompts: list,
+    mask_size: int = 256,
+    prompt_space: Optional[int] = None,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Run SAM prompt decoder → 3 proposal masks per sample.
+
+    Args:
+        images: [B, 3, H, W] float RGB in [0, 1].
+        prompts: list of prompt dicts (point/bbox in prompt_space coords).
+        mask_size: output spatial size for GNN input.
+        prompt_space: resolution prompts were built in (defaults to mask_size).
+
+    Returns:
+        sam_masks: [B, 3, mask_size, mask_size] float in {0, 1}
+        sam_scores: [B, 3] SAM quality scores
+    """
+    from segment_anything import SamPredictor
+
+    B, _, H, W = images.shape
+    prompt_space = prompt_space or mask_size
+    device = images.device
+    all_masks = []
+    all_scores = []
+
+    predictor = SamPredictor(sam_model)
+    for i in range(B):
+        img_np = (
+            images[i].permute(1, 2, 0).detach().cpu().numpy().clip(0, 1) * 255
+        ).astype(np.uint8)
+        scaled = _scale_prompt_to_image(prompts[i], prompt_space, H)
+
+        predictor.set_image(img_np)
+
+        point_coords = None
+        point_labels = None
+        box = None
+        if "point" in scaled:
+            point_coords = np.array([scaled["point"]], dtype=np.float32)
+            point_labels = np.array([1], dtype=np.int32)
+        if "bbox" in scaled:
+            x, y, bw, bh = scaled["bbox"]
+            box = np.array([x, y, x + bw, y + bh], dtype=np.float32)
+
+        masks, scores, _ = predictor.predict(
+            point_coords=point_coords,
+            point_labels=point_labels,
+            box=box,
+            multimask_output=True,
+        )
+        # masks: [3, H, W] at original image resolution
+        m = torch.from_numpy(masks.astype(np.float32)).to(device)
+        if m.shape[-2:] != (mask_size, mask_size):
+            m = F.interpolate(
+                m.unsqueeze(0),
+                size=(mask_size, mask_size),
+                mode="bilinear",
+                align_corners=False,
+            )[0]
+        all_masks.append(m)
+        all_scores.append(torch.from_numpy(scores.astype(np.float32)).to(device))
+
+    sam_masks = torch.stack(all_masks, dim=0)
+    sam_scores = torch.stack(all_scores, dim=0)
+    return sam_masks, sam_scores
+
+
+def _best_mask_by_score(masks_3: torch.Tensor, scores: torch.Tensor) -> torch.Tensor:
+    """Pick highest SAM-score mask per sample. Returns [B, 1, H, W]."""
+    idx = scores.argmax(dim=1)
+    B = masks_3.shape[0]
+    chosen = masks_3[torch.arange(B, device=masks_3.device), idx]
+    return chosen.unsqueeze(1)
+
+
+def _best_mask_by_iou(masks_3: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """Pick mask with highest IoU vs GT (oracle, for analysis). Returns [B, 1, H, W]."""
+    B = masks_3.shape[0]
+    best = []
+    for i in range(B):
+        ious = [
+            compute_iou(masks_3[i : i + 1, k : k + 1], target[i : i + 1])
+            for k in range(masks_3.shape[1])
+        ]
+        k = int(np.argmax(ious))
+        best.append(masks_3[i, k : k + 1])
+    return torch.stack(best, dim=0)
+
+
 class MetricTracker:
     def __init__(self):
         self.reset()
@@ -191,6 +387,76 @@ class MetricTracker:
         return {
             "iou": self.iou_sum / self.count,
             "dice": self.dice_sum / self.count,
+        }
+
+
+class RefinementMetricTracker:
+    """Raw SAM vs GNN-refined metrics with COCO-style mask AP."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.raw_iou_sum = 0.0
+        self.refined_iou_sum = 0.0
+        self.raw_ap_sum = 0.0
+        self.refined_ap_sum = 0.0
+        self.raw_ap50_sum = 0.0
+        self.refined_ap50_sum = 0.0
+        self.count = 0
+
+    def update(
+        self,
+        raw_masks_3: torch.Tensor,
+        raw_scores: torch.Tensor,
+        refined_logits: torch.Tensor,
+        target: torch.Tensor,
+    ):
+        """Compare SAM best-score mask vs mean refined mask quality."""
+        raw_best = _best_mask_by_score(raw_masks_3, raw_scores)
+        refined_mean = torch.sigmoid(refined_logits).mean(dim=1, keepdim=True)
+
+        for i in range(target.shape[0]):
+            raw_iou = compute_iou(raw_best[i : i + 1], target[i : i + 1])
+            ref_iou = compute_iou(refined_mean[i : i + 1], target[i : i + 1])
+            self.raw_iou_sum += raw_iou
+            self.refined_iou_sum += ref_iou
+            self.raw_ap_sum += mask_ap_from_iou(raw_iou)
+            self.refined_ap_sum += mask_ap_from_iou(ref_iou)
+            self.raw_ap50_sum += 1.0 if raw_iou >= 0.5 else 0.0
+            self.refined_ap50_sum += 1.0 if ref_iou >= 0.5 else 0.0
+            self.count += 1
+
+    def compute(self) -> Dict[str, float]:
+        if self.count == 0:
+            return {
+                "raw_sam_iou": 0.0,
+                "refined_iou": 0.0,
+                "delta_iou": 0.0,
+                "raw_sam_ap": 0.0,
+                "refined_ap": 0.0,
+                "delta_ap": 0.0,
+                "raw_sam_ap50": 0.0,
+                "refined_ap50": 0.0,
+                "delta_ap50": 0.0,
+            }
+        n = self.count
+        raw_iou = self.raw_iou_sum / n
+        ref_iou = self.refined_iou_sum / n
+        raw_ap = self.raw_ap_sum / n
+        ref_ap = self.refined_ap_sum / n
+        raw_ap50 = self.raw_ap50_sum / n
+        ref_ap50 = self.refined_ap50_sum / n
+        return {
+            "raw_sam_iou": raw_iou,
+            "refined_iou": ref_iou,
+            "delta_iou": ref_iou - raw_iou,
+            "raw_sam_ap": raw_ap,
+            "refined_ap": ref_ap,
+            "delta_ap": ref_ap - raw_ap,
+            "raw_sam_ap50": raw_ap50,
+            "refined_ap50": ref_ap50,
+            "delta_ap50": ref_ap50 - raw_ap50,
         }
 
 

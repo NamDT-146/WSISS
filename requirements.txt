@@ -26,6 +26,9 @@ wandb>=0.16
 # Kaggle downloads
 kaggle>=1.6
 
+# Hugging Face Hub (upload Exp 1C best weights)
+huggingface_hub>=0.20
+
 # Stage-2 students
 ultralytics>=8.1
 

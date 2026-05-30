@@ -12,3 +12,4 @@ export WSSIS_REPO_ROOT="$REPO_ROOT"
 export PYTHONPATH="$REPO_ROOT:${PYTHONPATH:-}"
 
 python -m modules.wssis.prep.run_p0 "$@"
+# Resume stage1:  bash scripts/prep/run_p0.sh --run-id MY_RUN --resume --skip-splits --skip-embeddings

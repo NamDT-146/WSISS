@@ -23,8 +23,8 @@ from modules.wssis.paths import (
     experiment_output_dir,
     gnn_checkpoint,
     repo_root,
-    splits_dir,
 )
+from modules.wssis.run_context import RunContext
 
 
 def _check_p0_artifacts(spec: ExperimentSpec) -> None:
@@ -56,7 +56,7 @@ def _split_file_for_spec(spec: ExperimentSpec) -> Path:
     return paths["train_all_txt"]
 
 
-def _write_experiment_config(spec: ExperimentSpec, out_dir: Path) -> Path:
+def _write_experiment_config(spec: ExperimentSpec, out_dir: Path, ctx: Optional[RunContext] = None) -> Path:
     cfg = {
         "experiment_id": spec.id,
         "name": spec.name,
@@ -77,6 +77,9 @@ def _write_experiment_config(spec: ExperimentSpec, out_dir: Path) -> Path:
     }
     path = out_dir / "experiment_config.json"
     path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    if ctx is not None:
+        ctx.save_config(cfg)
+        ctx.log_metrics({"event": "experiment_config_written", "experiment_id": spec.id})
     return path
 
 
@@ -178,14 +181,23 @@ def train_experiment(
     spec: ExperimentSpec,
     dry_run: bool = False,
     skip_p0_check: bool = False,
+    run_ctx: Optional[RunContext] = None,
 ) -> Path:
     if not skip_p0_check:
         _check_p0_artifacts(spec)
 
-    out_dir = experiment_output_dir(spec.id)
-    _write_experiment_config(spec, out_dir)
+    ctx = run_ctx or RunContext(task=f"exp_{spec.id}", experiment_id=spec.id)
+    out_dir = ctx.exp_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    _write_experiment_config(spec, out_dir, ctx=ctx)
 
-    print(f"[stage2] Starting experiment {spec.id}: {spec.name}")
+    step_key = f"exp_{spec.id}"
+    if ctx.is_step_done(step_key) and not dry_run:
+        ctx.log("Experiment %s already marked done in progress.json (skip or delete to rerun)", spec.id)
+        return out_dir
+
+    ctx.update_step(step_key, {"status": "running", "name": spec.name})
+    ctx.log("Starting experiment %s: %s", spec.id, spec.name)
     if spec.student == "mask2former":
         _mask2former_train(spec, out_dir, dry_run=dry_run)
     elif spec.student == "yolov8":
@@ -193,15 +205,36 @@ def train_experiment(
     else:
         raise ValueError(f"Unknown student: {spec.student}")
 
+    if not dry_run:
+        ctx.update_step(step_key, {"status": "done", "output_dir": str(out_dir)})
+        ctx.finalize_report_bundle(
+            extra_files={"experiment_config.json": out_dir / "experiment_config.json"}
+        )
     return out_dir
 
 
-def evaluate_experiment(spec: ExperimentSpec, dry_run: bool = False) -> None:
+def evaluate_experiment(spec: ExperimentSpec, dry_run: bool = False, run_ctx: Optional[RunContext] = None) -> None:
     out_dir = experiment_output_dir(spec.id)
-    print(f"[eval] Experiment {spec.id} — run COCO eval on {out_dir}")
-    print(
-        "Log AP, AP50, AP75, AP_S, AP_M, AP_L per EXPERIMENT.md. "
-        "Implement modules/wssis/training/evaluate.py hook when student checkpoints exist."
-    )
+    print(f"[eval] Experiment {spec.id} — outputs at {out_dir}")
+
     if dry_run:
+        print("[eval] Would run: teacher val report (raw SAM + GNN) + student Mask2Former COCO AP")
         return
+
+    from modules.wssis.training.evaluate_teacher import evaluate_teacher_on_val
+
+    ctx = run_ctx or RunContext(task=f"eval_{spec.id}", experiment_id=spec.id)
+    gnn_ckpt = gnn_checkpoint(spec.gnn_checkpoint) if spec.use_gnn else None
+    modes = ("raw_sam", "gnn_refined") if spec.use_gnn else ("raw_sam",)
+
+    print("[eval] Teacher baseline on val (all weak-signal types)...")
+    evaluate_teacher_on_val(
+        gnn_ckpt=gnn_ckpt,
+        run_ctx=ctx,
+        modes=modes,
+    )
+
+    print(
+        "[eval] Student Mask2Former COCO AP — run train_net.py --eval-only on "
+        f"{out_dir / 'mask2former'} when Stage-2 checkpoints exist."
+    )

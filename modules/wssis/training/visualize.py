@@ -113,22 +113,47 @@ def sam_masks_from_prompts(
     return best_mask, pseudo_mask
 
 
-def gnn_mask_from_embed(
+def gnn_mask_from_inputs(
     refiner: torch.nn.Module,
     sam_model: torch.nn.Module,
     image_tensor: torch.Tensor,
+    prompts: dict,
     pixel_mean: torch.Tensor,
     pixel_std: torch.Tensor,
     target_hw: Tuple[int, int],
+    mask_size: int = 256,
 ) -> np.ndarray:
-    """GNN refined mask at original image resolution."""
-    from modules.vig_refinenet.sam_stage1_common import encode_sam_embeddings
+    """GNN refined mask at original image resolution (PLAN §2 pipeline)."""
+    from modules.vig_refinenet.sam_stage1_common import (
+        build_weak_signal_tensor,
+        decode_sam_masks_3_batch,
+        encode_sam_embeddings,
+    )
 
     device = image_tensor.device
+    mask_np = np.zeros((mask_size, mask_size), dtype=np.uint8)
     with torch.no_grad():
         embed = encode_sam_embeddings(sam_model, image_tensor, pixel_mean, pixel_std)
-        logits = refiner(embed)
-        prob = torch.sigmoid(logits)
+        from modules.wssis.weak_prompts import sam_prompt_for_signal
+
+        sam_prompt = sam_prompt_for_signal(prompts, "points_only")
+        sam_masks_3, _ = decode_sam_masks_3_batch(
+            sam_model,
+            image_tensor,
+            [sam_prompt],
+            mask_size=mask_size,
+            prompt_space=image_tensor.shape[-1],
+        )
+        weak_signal = build_weak_signal_tensor(
+            [prompts],
+            spatial_size=mask_size,
+            device=device,
+            mask_np_list=[mask_np],
+            active_signal=None,
+            policy="val_fixed",
+        )
+        logits = refiner(embed, image_tensor, sam_masks_3, weak_signal)
+        prob = torch.sigmoid(logits).mean(dim=1, keepdim=True)
         if prob.shape[-2:] != target_hw:
             prob = F.interpolate(
                 prob,
@@ -173,6 +198,7 @@ def visualize_stage1_epoch(
     pixel_std: torch.Tensor,
     device: torch.device,
     run_name: str = "default",
+    output_dir: Optional[Path] = None,
     sample_indices: Optional[Sequence[int]] = None,
     num_samples: int = 4,
     policy: str = "val_fixed",
@@ -182,7 +208,8 @@ def visualize_stage1_epoch(
 
     Panels: Image | Weak signal | Raw SAM | GNN refined (pseudo) | GT
     """
-    out_dir = stage1_viz_dir(run_name)
+    out_dir = Path(output_dir) if output_dir is not None else stage1_viz_dir(run_name)
+    out_dir.mkdir(parents=True, exist_ok=True)
     n = len(dataset)
     if sample_indices is None:
         if n == 0:
@@ -197,28 +224,33 @@ def visualize_stage1_epoch(
         image_rgb, mask_np, meta = dataset.get_raw_pair(ds_idx)
         h, w = image_rgb.shape[:2]
 
-        prompts = build_instance_prompts(mask_np, policy=policy, signal_type="mixed")
-        weak_vis = _draw_weak_signal_cv2(image_rgb, prompts)
+        import cv2
+
+        img1024 = cv2.resize(image_rgb, (1024, 1024), interpolation=cv2.INTER_LINEAR)
+        mask1024 = cv2.resize(
+            mask_np.astype(np.uint8), (1024, 1024), interpolation=cv2.INTER_NEAREST
+        )
+        prompts_orig = build_instance_prompts(mask_np > 0, policy=policy, signal_type="mixed")
+        prompts_1024 = build_instance_prompts(mask1024 > 0, policy=policy, signal_type="mixed")
+        weak_vis = _draw_weak_signal_cv2(image_rgb, prompts_orig)
 
         try:
-            sam_mask, pseudo_sam = sam_masks_from_prompts(sam_model, image_rgb, prompts)
+            sam_mask, pseudo_sam = sam_masks_from_prompts(sam_model, image_rgb, prompts_orig)
         except Exception as e:
             print(f"[viz] SAM predict failed for idx {ds_idx}: {e}")
             sam_mask = np.zeros((h, w), dtype=bool)
             pseudo_sam = sam_mask.copy()
 
-        # GNN on 1024 tensor matching training
-        import cv2
-
-        img1024 = cv2.resize(image_rgb, (1024, 1024), interpolation=cv2.INTER_LINEAR)
         image_t = torch.from_numpy(img1024).permute(2, 0, 1).float().div(255.0).unsqueeze(0).to(device)
-        gnn_mask = gnn_mask_from_embed(
+        gnn_mask = gnn_mask_from_inputs(
             refiner,
             sam_model,
             image_t,
+            prompts_1024,
             pixel_mean,
             pixel_std,
             target_hw=(h, w),
+            mask_size=256,
         )
 
         gt_mask = mask_np > 0

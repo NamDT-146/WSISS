@@ -1,13 +1,14 @@
 """
-Stage-1 GNN refiner over frozen SAM image embeddings (64x64x256).
+Stage-1 GNN refiner (PLAN §2 / §0.5).
 
-Designed for Kaggle notebooks: pure PyTorch, no package imports required when
-cells are copied inline. Matches PLAN.md tensor shapes (SAM stride-16, mask 256).
+SAM image embedding initializes first-layer graph nodes only.
+Trainable inputs: RGB image, 3 SAM proposal masks, weak-signal spatial map.
+Outputs 3 refined mask logits at mask_size (256).
 """
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import torch
 import torch.nn as nn
@@ -48,11 +49,7 @@ class NodeMLP(nn.Module):
 
 
 class GNNStage(nn.Module):
-    """
-    One round of attention-weighted message passing on a spatial graph.
-
-    connectivity: 'grid' (8-neighbor) or 'local' (k-NN in normalized coordinates).
-    """
+    """One round of attention-weighted message passing on a spatial graph."""
 
     def __init__(
         self,
@@ -72,7 +69,7 @@ class GNNStage(nn.Module):
         self.node_mlp = NodeMLP(in_dim, hidden_dim, out_dim)
         self.proj = nn.Linear(in_dim, out_dim) if in_dim != out_dim else nn.Identity()
 
-        self._edge_cache: dict[Tuple[int, int, str, int, str], Tuple[torch.Tensor, torch.Tensor]] = {}
+        self._edge_cache: dict = {}
 
     def _get_positions(self, h: int, w: int, device: torch.device) -> torch.Tensor:
         y = torch.linspace(0, 1, h, device=device)
@@ -82,7 +79,7 @@ class GNNStage(nn.Module):
 
     def _build_edges_grid(
         self, h: int, w: int, device: torch.device
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         src_list, dst_list = [], []
         for i in range(h):
             for j in range(w):
@@ -101,7 +98,7 @@ class GNNStage(nn.Module):
 
     def _build_edges_local(
         self, h: int, w: int, k: int, device: torch.device
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         num_nodes = h * w
         pos = self._get_positions(h, w, device)
         dist = torch.cdist(pos, pos)
@@ -113,7 +110,7 @@ class GNNStage(nn.Module):
 
     def _get_edges(
         self, h: int, w: int, device: torch.device
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         key = (h, w, self.connectivity, self.k_neighbors, str(device))
         if key not in self._edge_cache:
             if self.connectivity == "local":
@@ -153,12 +150,10 @@ class GNNStage(nn.Module):
 
 class SamStage1Refiner(nn.Module):
     """
-    Lightweight GNN refiner on SAM embeddings.
+    GNN mask refiner per PLAN §2.
 
-    Args:
-        sam_channels: SAM embedding depth (256 for ViT-B).
-        grid_size: spatial grid for GNN (32 recommended for Kaggle memory).
-        mask_size: output mask resolution (256 per PLAN Stage-1).
+    ``sam_embed`` seeds first-layer node features only (frozen SAM encoder output).
+    Learned fusion uses RGB image, 3 SAM proposal masks, and weak-signal maps.
     """
 
     def __init__(
@@ -172,14 +167,43 @@ class SamStage1Refiner(nn.Module):
         num_gnn_layers: int = 2,
         connectivity: str = "grid",
         k_neighbors: int = 8,
+        num_output_masks: int = 3,
     ):
         super().__init__()
         self.grid_size = grid_size
         self.mask_size = mask_size
-        self.sam_spatial = 64
+        self.num_output_masks = num_output_masks
 
-        self.input_proj = nn.Sequential(
+        # SAM embed → node initialization (not the sole forward input)
+        self.node_init_proj = nn.Sequential(
             nn.Conv2d(sam_channels, feat_dim, kernel_size=1, bias=False),
+            nn.BatchNorm2d(feat_dim),
+            nn.ReLU(inplace=True),
+        )
+
+        self.image_encoder = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(64, feat_dim, kernel_size=1),
+        )
+
+        self.mask_encoder = nn.Sequential(
+            nn.Conv2d(num_output_masks, 32, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, feat_dim, kernel_size=1),
+        )
+
+        # weak signal: ch0 point (Gaussian), ch1 box (uniform), ch2 scribble (Gaussian-widened)
+        self.weak_encoder = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, padding=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(32, feat_dim, kernel_size=1),
+        )
+
+        self.fuse = nn.Sequential(
+            nn.Conv2d(feat_dim * 4, feat_dim, kernel_size=1, bias=False),
             nn.BatchNorm2d(feat_dim),
             nn.ReLU(inplace=True),
         )
@@ -201,23 +225,48 @@ class SamStage1Refiner(nn.Module):
         self.mask_head = nn.Sequential(
             nn.Conv2d(out_dim, 32, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(32, 1, kernel_size=1),
+            nn.Conv2d(32, num_output_masks, kernel_size=1),
         )
 
-    def forward(self, sam_embed: torch.Tensor) -> torch.Tensor:
+    def _to_grid(self, x: torch.Tensor) -> torch.Tensor:
+        if x.shape[-2:] == (self.grid_size, self.grid_size):
+            return x
+        return F.adaptive_avg_pool2d(x, (self.grid_size, self.grid_size))
+
+    def forward(
+        self,
+        sam_embed: torch.Tensor,
+        images: torch.Tensor,
+        sam_masks_3: torch.Tensor,
+        weak_signal: torch.Tensor,
+    ) -> torch.Tensor:
         """
         Args:
-            sam_embed: [B, 256, 64, 64] from frozen SAM image encoder.
+            sam_embed: [B, 256, 64, 64] frozen SAM encoder — node init only.
+            images: [B, 3, H, W] RGB in [0, 1].
+            sam_masks_3: [B, 3, mask_size, mask_size] SAM decoder proposals.
+            weak_signal: [B, 3, mask_size, mask_size] spatial weak prompts.
 
         Returns:
-            mask_logits: [B, 1, mask_size, mask_size]
+            mask_logits: [B, 3, mask_size, mask_size]
         """
         B = sam_embed.shape[0]
-        x = sam_embed
-        if x.shape[-1] != self.grid_size:
-            x = F.adaptive_avg_pool2d(x, (self.grid_size, self.grid_size))
 
-        x = self.input_proj(x)
+        node_init = self.node_init_proj(self._to_grid(sam_embed))
+
+        img = F.interpolate(
+            images,
+            size=(self.mask_size, self.mask_size),
+            mode="bilinear",
+            align_corners=False,
+        )
+        image_feat = self._to_grid(self.image_encoder(img))
+
+        mask_feat = self._to_grid(self.mask_encoder(sam_masks_3.float()))
+        weak_feat = self._to_grid(self.weak_encoder(weak_signal))
+
+        x = self.fuse(torch.cat([node_init, image_feat, mask_feat, weak_feat], dim=1))
+
         feats = x.flatten(2).transpose(1, 2)
         h = w = self.grid_size
         for stage in self.stages:
@@ -225,12 +274,13 @@ class SamStage1Refiner(nn.Module):
 
         spatial = feats.transpose(1, 2).reshape(B, -1, h, w)
         logits = self.mask_head(spatial)
-        logits = F.interpolate(
-            logits,
-            size=(self.mask_size, self.mask_size),
-            mode="bilinear",
-            align_corners=False,
-        )
+        if logits.shape[-2:] != (self.mask_size, self.mask_size):
+            logits = F.interpolate(
+                logits,
+                size=(self.mask_size, self.mask_size),
+                mode="bilinear",
+                align_corners=False,
+            )
         return logits
 
 
@@ -248,6 +298,7 @@ def build_sam_stage1_refiner(config: Optional[dict] = None) -> SamStage1Refiner:
         num_gnn_layers=model_cfg.get("num_gnn_layers", 2),
         connectivity=model_cfg.get("connectivity", "grid"),
         k_neighbors=model_cfg.get("k_neighbors", 8),
+        num_output_masks=model_cfg.get("num_output_masks", 3),
     )
 
 

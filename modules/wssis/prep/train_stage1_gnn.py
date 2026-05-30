@@ -1,31 +1,37 @@
 """
-P0.4 — Train Stage-1 GNN refiner on labeled_5pct (current embed-only prototype).
-
-See report/PLAN.md §0.5: full SAM-decoder + 3-mask refinement pipeline is not yet wired.
+P0.4 — Train Stage-1 GNN refiner on labeled_5pct.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
-import torch
+from modules.wssis.paths import build_coco_paths, ensure_dirs
+from modules.wssis.run_context import RunContext
 
-from modules.wssis.paths import build_coco_paths, checkpoints_dir, ensure_dirs, gnn_checkpoint
 
-
-def _build_config(epochs: int, batch_size: int, lr: float, max_instances: int | None) -> dict:
+def _build_config(
+    epochs: int,
+    batch_size: int,
+    lr: float,
+    max_instances: int | None,
+    run_id: str | None = None,
+    run_dir: str | None = None,
+) -> dict:
+    paths = build_coco_paths()
     return {
+        "run_id": run_id,
+        "run_dir": run_dir,
         "data": {
             "img_size": 1024,
             "mask_size": 256,
             "num_workers": 4,
             "max_instances": max_instances,
-            "coco_root": str(build_coco_paths()["coco_root"]),
-            "train_image_txt": str(build_coco_paths()["labeled_5pct_txt"]),
-            "val_image_txt": str(build_coco_paths()["val_all_txt"]),
+            "coco_root": str(paths["coco_root"]),
+            "train_image_txt": str(paths["labeled_5pct_txt"]),
+            "val_image_txt": str(paths["val_all_txt"]),
         },
         "model": {
             "sam_channels": 256,
@@ -46,7 +52,14 @@ def _build_config(epochs: int, batch_size: int, lr: float, max_instances: int | 
             "bce_weight": 1.0,
             "dice_weight": 1.0,
             "symmetric_weight": 0.1,
+            "save_every_epochs": 1,
         },
+        "early_stopping": {
+            "patience": 10,
+            "monitor": "val_refined_ap",
+            "mode": "max",
+        },
+        "logging": {"tensorboard": True, "wandb": True},
         "use_symmetric_loss": True,
         "visualization": {
             "enabled": True,
@@ -65,6 +78,10 @@ def run(
     output_name: str = "gnn_refiner_stage1.pt",
     device: str = "cuda",
     config_overrides: dict | None = None,
+    run_id: str | None = None,
+    run_dir: str | None = None,
+    resume: bool = False,
+    patience: int = 10,
 ) -> Path:
     ensure_dirs()
     paths = build_coco_paths()
@@ -77,18 +94,33 @@ def run(
 
     from modules.wssis.training.stage1 import train_stage1_gnn
 
-    cfg = _build_config(epochs, batch_size, lr, max_instances)
+    cfg = _build_config(epochs, batch_size, lr, max_instances, run_id, run_dir)
     cfg["training"]["symmetric_weight"] = symmetric_weight
     cfg["use_symmetric_loss"] = symmetric_weight > 0
+    cfg["early_stopping"]["patience"] = patience
+
     if config_overrides:
         for key, val in config_overrides.items():
             if key == "visualization" and isinstance(val, dict):
                 cfg.setdefault("visualization", {}).update(val)
+            elif key == "early_stopping" and isinstance(val, dict):
+                cfg.setdefault("early_stopping", {}).update(val)
             else:
                 cfg[key] = val
 
-    out = train_stage1_gnn(cfg, device=device, output_name=output_name)
+    ctx = RunContext(run_id=cfg.get("run_id"), run_dir=cfg.get("run_dir"), task="stage1_gnn")
+    cfg["run_id"] = ctx.run_id
+    cfg["run_dir"] = str(ctx.root)
+
+    out = train_stage1_gnn(
+        cfg,
+        device=device,
+        output_name=output_name,
+        run_ctx=ctx,
+        resume=resume,
+    )
     print(f"[P0.4] Saved checkpoint: {out}")
+    print(f"[P0.4] Run bundle: {ctx.root}")
     return out
 
 
@@ -101,15 +133,22 @@ def main() -> None:
     parser.add_argument("--symmetric-weight", type=float, default=0.1)
     parser.add_argument("--output-name", default="gnn_refiner_stage1.pt")
     parser.add_argument("--device", default="cuda")
-    parser.add_argument("--no-viz", action="store_true", help="Disable per-epoch visualization")
-    parser.add_argument("--viz-samples", type=int, default=4, help="Val samples per epoch grid")
+    parser.add_argument("--no-viz", action="store_true")
+    parser.add_argument("--viz-samples", type=int, default=4)
+    parser.add_argument("--run-id", default=None, help="Run folder name under outputs/runs/")
+    parser.add_argument("--run-dir", default=None, help="Explicit run directory path")
+    parser.add_argument("--resume", action="store_true", help="Resume from last.pt in run dir")
+    parser.add_argument("--patience", type=int, default=10, help="Early stopping patience (0=off)")
+    parser.add_argument("--no-early-stop", action="store_true")
     args = parser.parse_args()
 
-    cfg_extra = {}
+    overrides = {}
     if args.no_viz:
-        cfg_extra["visualization"] = {"enabled": False}
+        overrides["visualization"] = {"enabled": False}
     else:
-        cfg_extra["visualization"] = {"enabled": True, "num_samples": args.viz_samples}
+        overrides["visualization"] = {"enabled": True, "num_samples": args.viz_samples}
+    if args.no_early_stop:
+        overrides["early_stopping"] = {"patience": 0}
 
     run(
         epochs=args.epochs,
@@ -119,7 +158,11 @@ def main() -> None:
         symmetric_weight=args.symmetric_weight,
         output_name=args.output_name,
         device=args.device,
-        config_overrides=cfg_extra,
+        config_overrides=overrides,
+        run_id=args.run_id,
+        run_dir=args.run_dir,
+        resume=args.resume,
+        patience=0 if args.no_early_stop else args.patience,
     )
 
 
