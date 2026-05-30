@@ -21,7 +21,7 @@ def main() -> None:
     parser.add_argument("--embedding-limit", type=int, default=None)
     parser.add_argument("--force-splits", action="store_true")
     parser.add_argument("--force-embeddings", action="store_true")
-    parser.add_argument("--stage1-epochs", type=int, default=20)
+    parser.add_argument("--stage1-epochs", type=int, default=30)
     parser.add_argument(
         "--batch-size",
         type=int,

@@ -78,7 +78,7 @@ def _build_config(
 
 
 def run(
-    epochs: int = 20,
+    epochs: int = 30,
     batch_size: int = 4,
     lr: float = 1e-4,
     max_instances: int | None = None,
@@ -139,7 +139,7 @@ def run(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="P0.4 train Stage-1 GNN")
-    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--max-instances", type=int, default=None)

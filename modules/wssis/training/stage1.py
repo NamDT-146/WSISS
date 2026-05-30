@@ -302,7 +302,7 @@ def train_stage1_gnn(
     )
 
     sym_w = training_cfg.get("symmetric_weight", 0.0) if config.get("use_symmetric_loss", True) else 0.0
-    max_epochs = training_cfg.get("epochs", 20)
+    max_epochs = training_cfg.get("epochs", 30)
     start_epoch = 1
     history = []
     best_val_ap = -1.0

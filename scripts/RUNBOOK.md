@@ -123,7 +123,7 @@ Or step-by-step:
 | ---- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
 | P0.1 | `python -m modules.wssis.prep.generate_splits`                                     | `data/splits/*`                                                                      |
 | P0.2 | `python -m modules.wssis.prep.precompute_sam_embeddings`                           | `data/cache/sam_embeddings/` (~23 GB)                                                |
-| P0.4 | `python -m modules.wssis.prep.train_stage1_gnn --run-id $WSSIS_RUN_ID --epochs 20 --batch-size 4` | `outputs/runs/<id>/checkpoints/best.pt` + legacy `checkpoints/gnn_refiner_stage1.pt` |
+| P0.4 | `python -m modules.wssis.prep.train_stage1_gnn --run-id $WSSIS_RUN_ID --epochs 30 --batch-size 4` | `outputs/runs/<id>/checkpoints/best.pt` + legacy `checkpoints/gnn_refiner_stage1.pt` |
 
 
 ### Logging & checkpoints (Stage-1)
