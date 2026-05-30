@@ -12,6 +12,7 @@ from typing import List, Optional, Sequence, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
+from tqdm import tqdm
 
 from modules.wssis.paths import stage1_viz_dir
 from modules.wssis.weak_prompts import build_instance_prompts
@@ -220,7 +221,9 @@ def visualize_stage1_epoch(
     refiner.eval()
     sam_model.eval()
 
-    for row_idx, ds_idx in enumerate(sample_indices):
+    for row_idx, ds_idx in enumerate(
+        tqdm(sample_indices, desc=f"Epoch {epoch} viz", leave=False, unit="sample")
+    ):
         image_rgb, mask_np, meta = dataset.get_raw_pair(ds_idx)
         h, w = image_rgb.shape[:2]
 

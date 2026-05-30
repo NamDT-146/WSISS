@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import torch
+from tqdm import tqdm
 
 from modules.wssis.paths import checkpoints_dir, sam_vit_b_checkpoint
 from modules.wssis.run_context import EarlyStopping, RunContext, gpu_memory_mb
@@ -244,7 +245,12 @@ def train_stage1_gnn(
     if viz_enabled:
         from modules.wssis.training.visualize import visualize_stage1_epoch
 
-    for epoch in range(start_epoch, max_epochs + 1):
+    epoch_pbar = tqdm(
+        range(start_epoch, max_epochs + 1),
+        desc="Stage-1 GNN",
+        unit="epoch",
+    )
+    for epoch in epoch_pbar:
         t0 = time.perf_counter()
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats(dev)
@@ -253,7 +259,13 @@ def train_stage1_gnn(
         train_totals = {"bce_loss": 0.0, "dice_loss": 0.0, "total_loss": 0.0, "sym_loss": 0.0}
         n_batches = 0
 
-        for images, masks, meta in train_loader:
+        train_pbar = tqdm(
+            train_loader,
+            desc=f"Epoch {epoch}/{max_epochs} train",
+            leave=False,
+            unit="batch",
+        )
+        for images, masks, meta in train_pbar:
             images, masks = images.to(dev), masks.to(dev)
             logits, _, _, gt3 = _stage1_forward_batch(
                 sam,
@@ -285,6 +297,10 @@ def train_stage1_gnn(
             train_totals["total_loss"] += comps["total_loss"] + sym_w * sym_val
             train_totals["sym_loss"] += sym_val
             n_batches += 1
+            train_pbar.set_postfix(
+                loss=f"{comps['total_loss'] + sym_w * sym_val:.4f}",
+                sym=f"{sym_val:.4f}",
+            )
 
         for k in train_totals:
             train_totals[k] /= max(n_batches, 1)
@@ -293,8 +309,14 @@ def train_stage1_gnn(
         val_totals = {"bce_loss": 0.0, "dice_loss": 0.0, "total_loss": 0.0}
         vn = 0
         tracker = RefinementMetricTracker()
+        val_pbar = tqdm(
+            val_loader,
+            desc=f"Epoch {epoch}/{max_epochs} val",
+            leave=False,
+            unit="batch",
+        )
         with torch.no_grad():
-            for images, masks, meta in val_loader:
+            for images, masks, meta in val_pbar:
                 images, masks = images.to(dev), masks.to(dev)
                 logits, sam_masks_3, sam_scores, gt3 = _stage1_forward_batch(
                     sam,
@@ -314,6 +336,7 @@ def train_stage1_gnn(
                     val_totals[k] += comps[k]
                 vn += 1
                 tracker.update(sam_masks_3, sam_scores, logits, masks)
+                val_pbar.set_postfix(loss=f"{comps['total_loss']:.4f}")
         for k in val_totals:
             val_totals[k] /= max(vn, 1)
 
@@ -398,6 +421,12 @@ def train_stage1_gnn(
                 num_samples=viz_samples,
                 policy=prompt_policy_val,
             )
+
+        epoch_pbar.set_postfix(
+            train_loss=f"{row['train_loss']:.4f}",
+            refined_AP=f"{row['val_refined_ap']:.4f}",
+            delta_AP=f"{row['delta_ap']:+.4f}",
+        )
 
         improved = early_stop.step(row)
         if early_stop.patience > 0 and improved:

@@ -20,6 +20,7 @@ from typing import Dict, Optional
 
 import torch
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from modules.wssis.paths import build_coco_paths, checkpoints_dir, gnn_checkpoint, sam_vit_b_checkpoint
 from modules.wssis.run_context import RunContext
@@ -158,8 +159,14 @@ def evaluate_teacher_on_val(
 
         for signal_type in WEAK_SIGNAL_TYPES:
             tracker = RefinementMetricTracker()
+            eval_pbar = tqdm(
+                val_loader,
+                desc=f"Teacher eval {mode} | {signal_type}",
+                leave=False,
+                unit="batch",
+            )
             with torch.no_grad():
-                for images, masks, meta in val_loader:
+                for images, masks, meta in eval_pbar:
                     images, masks = images.to(dev), masks.to(dev)
                     sam_masks_3, sam_scores, refined_logits = _forward_teacher_batch(
                         sam,
