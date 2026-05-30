@@ -175,29 +175,6 @@ def kill_stale_training_workers(*, dry_run: bool = False) -> list[int]:
     return killed
 
 
-def patch_detectron2_launch_cleanup() -> None:
-    """Wrap Detectron2 distributed workers with CUDA / process-group cleanup."""
-    try:
-        import detectron2.engine.launch as d2_launch
-    except ImportError:
-        return
-
-    if getattr(d2_launch, "_wssis_cleanup_patched", False):
-        return
-
-    original = d2_launch._distributed_worker
-
-    def _worker_with_cleanup(*args, **kwargs):
-        install_worker_signal_handlers()
-        try:
-            return original(*args, **kwargs)
-        finally:
-            cleanup_distributed()
-
-    d2_launch._distributed_worker = _worker_with_cleanup
-    d2_launch._wssis_cleanup_patched = True
-
-
 def _main() -> None:
     parser = argparse.ArgumentParser(description="Kill stale WSSIS GPU training workers")
     parser.add_argument("--dry-run", action="store_true")

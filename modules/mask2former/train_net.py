@@ -43,7 +43,6 @@ from detectron2.engine import (
     DefaultTrainer,
     default_argument_parser,
     default_setup,
-    launch,
 )
 from detectron2.evaluation import (
     CityscapesInstanceEvaluator,
@@ -354,14 +353,12 @@ def main(args):
 
 if __name__ == "__main__":
     try:
-        from modules.wssis.proc_utils import patch_detectron2_launch_cleanup
+        from modules.wssis.mask2former_launch import launch
     except ImportError:
-        patch_detectron2_launch_cleanup = None
+        from detectron2.engine import launch
 
     args = default_argument_parser().parse_args()
     print("Command Line Args:", args)
-    if patch_detectron2_launch_cleanup is not None:
-        patch_detectron2_launch_cleanup()
     launch(
         main,
         args.num_gpus,
