@@ -58,6 +58,11 @@ from mask2former import (
     add_maskformer2_config,
 )
 
+try:
+    from modules.wssis.mask2former_config import add_wssis_config
+except ImportError:
+    add_wssis_config = None
+
 
 class Trainer(DefaultTrainer):
     """
@@ -286,6 +291,8 @@ def setup(args):
     # for poly lr schedule
     add_deeplab_config(cfg)
     add_maskformer2_config(cfg)
+    if add_wssis_config is not None:
+        add_wssis_config(cfg)
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
     cfg.freeze()

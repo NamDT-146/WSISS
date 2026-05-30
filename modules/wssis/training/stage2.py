@@ -125,11 +125,14 @@ def _mask2former_train(spec: ExperimentSpec, out_dir: Path, dry_run: bool = Fals
     generated.write_text(
         f"""# Auto-generated for experiment {spec.id}
 _BASE_: "{base_yaml.as_posix()}"
-WSSIS_EXPERIMENT: "{spec.id}"
-WSSIS_IMAGE_LIST: "{split_txt.as_posix()}"
-WSSIS_USE_GNN: {str(spec.use_gnn).lower()}
-WSSIS_USE_DISTILL: {str(spec.use_distillation).lower()}
-WSSIS_WEAK_SIGNAL: "{spec.weak_signal}"
+WSSIS:
+  EXPERIMENT_ID: "{spec.id}"
+  IMAGE_LIST: "{split_txt.as_posix()}"
+  LABELED_SPLIT: "{spec.labeled_split}"
+  WEAK_SPLIT: "{spec.weak_split}"
+  USE_GNN: {str(spec.use_gnn).lower()}
+  USE_DISTILL: {str(spec.use_distillation).lower()}
+  WEAK_SIGNAL: "{spec.weak_signal}"
 OUTPUT_DIR: "{(out_dir / 'mask2former').as_posix()}"
 SOLVER:
   MAX_ITER: {spec.stage2_epochs * 1000}
