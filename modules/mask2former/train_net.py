@@ -338,9 +338,12 @@ class Trainer(DefaultTrainer):
 
         def _latest(name: str):
             buf = storage.histories().get(name)
-            if buf is None or len(buf) == 0:
+            if buf is None:
                 return None
-            return buf.latest()
+            try:
+                return buf.latest()
+            except (KeyError, IndexError, ValueError):
+                return None
 
         loss_ce = _latest("loss_ce")
         loss_mask = _latest("loss_mask")
