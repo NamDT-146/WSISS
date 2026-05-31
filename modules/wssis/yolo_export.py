@@ -13,14 +13,24 @@ logger = logging.getLogger(__name__)
 
 from modules.wssis.experiments.registry import ExperimentSpec
 from modules.wssis.mask2former_datasets import (
-    _ensure_filtered_coco_json,
+    _coco_thing_classes,
     coco_anns_to_masks_for_image,
 )
+from detectron2.data.datasets.builtin_meta import COCO_CATEGORIES
 from modules.wssis.paths import build_coco_paths, resolve_coco_image_dir
 from modules.wssis.smoke_profile import get_smoke_profile
 from modules.wssis.stage2_constants import STAGE2_STUDENT_IMAGE_SIZE
 from modules.wssis.teacher_pseudo import map_teacher_pseudo_to_size, prepare_sam_teacher_inputs
 from modules.vig_refinenet.coco_sam_stage1_dataset import filter_coco_json, load_image_ids_from_txt
+
+
+def _coco_category_id_to_yolo_index() -> dict[int, int]:
+    """Map COCO category_id (non-contiguous) to YOLO class index 0..79."""
+    return {
+        int(c["id"]): i
+        for i, c in enumerate(COCO_CATEGORIES)
+        if int(c.get("isthing", 1)) == 1
+    }
 
 
 def prepare_yolo_semi_weak_dataset(
@@ -35,10 +45,12 @@ def prepare_yolo_semi_weak_dataset(
     """
     paths = build_coco_paths()
     export_dir.mkdir(parents=True, exist_ok=True)
-    images_out = export_dir / "images" / "train"
-    labels_out = export_dir / "labels" / "train"
-    images_out.mkdir(parents=True, exist_ok=True)
-    labels_out.mkdir(parents=True, exist_ok=True)
+    images_train = export_dir / "images" / "train"
+    labels_train = export_dir / "labels" / "train"
+    images_val = export_dir / "images" / "val"
+    labels_val = export_dir / "labels" / "val"
+    for d in (images_train, labels_train, images_val, labels_val):
+        d.mkdir(parents=True, exist_ok=True)
 
     smoke = get_smoke_profile()
     if max_images is None and smoke:
@@ -47,11 +59,22 @@ def prepare_yolo_semi_weak_dataset(
     with open(paths["train_ann"], encoding="utf-8") as f:
         coco = json.load(f)
 
-    def export_split(txt_path: Path, use_pseudo: bool) -> int:
+    cat_to_yolo = _coco_category_id_to_yolo_index()
+
+    def export_split(
+        txt_path: Path,
+        *,
+        use_pseudo: bool,
+        coco_dict: dict,
+        img_root: Path,
+        images_out: Path,
+        labels_out: Path,
+        split_tag: str,
+    ) -> int:
         ids = sorted(load_image_ids_from_txt(txt_path))
         if max_images:
             ids = ids[:max_images]
-        data = filter_coco_json(coco, set(ids))
+        data = filter_coco_json(coco_dict, set(ids))
         images = {img["id"]: img for img in data["images"]}
         anns_by_img: dict = {}
         for ann in data["annotations"]:
@@ -75,7 +98,6 @@ def prepare_yolo_semi_weak_dataset(
                 freeze_gnn=True,
             )
 
-        img_root = resolve_coco_image_dir(paths["coco_root"], "train")
         count = 0
         total = len(ids)
         for idx, img_id in enumerate(ids):
@@ -106,7 +128,7 @@ def prepare_yolo_semi_weak_dataset(
                     meta = {
                         "image_id": img_id,
                         "ann_ids": [a["id"] for a in anns[: len(mask_np_list)]],
-                        "split": "train",
+                        "split": split_tag,
                     }
                     pseudo, cats = teacher.generate_pseudo_for_image(
                         img_t, masks_sam, meta, prompt_policy="train_online"
@@ -124,7 +146,9 @@ def prepare_yolo_semi_weak_dataset(
                         cy = ((ys.min() + ys.max()) / 2) / student_size
                         bw = (xs.max() - xs.min() + 1) / student_size
                         bh = (ys.max() - ys.min() + 1) / student_size
-                        lines.append(f"{max(0, cat)} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}")
+                        lines.append(
+                            f"{cat_to_yolo.get(int(cat), 0)} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}"
+                        )
                 except Exception:
                     pseudo_mode = False
 
@@ -140,8 +164,11 @@ def prepare_yolo_semi_weak_dataset(
                     cy_s = cy
                     bw_s = bw / w
                     bh_s = bh / h
+                    cls_idx = cat_to_yolo.get(int(ann["category_id"]))
+                    if cls_idx is None:
+                        continue
                     lines.append(
-                        f"{ann['category_id']} {cx_s:.6f} {cy_s:.6f} {bw_s:.6f} {bh_s:.6f}"
+                        f"{cls_idx} {cx_s:.6f} {cy_s:.6f} {bw_s:.6f} {bh_s:.6f}"
                     )
 
             label_path.write_text("\n".join(lines), encoding="utf-8")
@@ -162,19 +189,57 @@ def prepare_yolo_semi_weak_dataset(
                 torch.cuda.empty_cache()
         return count
 
+    train_root = resolve_coco_image_dir(paths["coco_root"], "train")
+    val_root = resolve_coco_image_dir(paths["coco_root"], "val")
+
     logger.info("[yolo_export] Exporting labeled split (GT boxes)...")
-    n_l = export_split(paths["labeled_5pct_txt"], use_pseudo=False)
+    n_l = export_split(
+        paths["labeled_5pct_txt"],
+        use_pseudo=False,
+        coco_dict=coco,
+        img_root=train_root,
+        images_out=images_train,
+        labels_out=labels_train,
+        split_tag="train",
+    )
     logger.info("[yolo_export] Exporting weak split (teacher pseudo-labels)...")
-    n_w = export_split(paths["weak_95pct_txt"], use_pseudo=True)
+    n_w = export_split(
+        paths["weak_95pct_txt"],
+        use_pseudo=True,
+        coco_dict=coco,
+        img_root=train_root,
+        images_out=images_train,
+        labels_out=labels_train,
+        split_tag="train",
+    )
+
+    with open(paths["val_ann"], encoding="utf-8") as f:
+        val_coco = json.load(f)
+    logger.info("[yolo_export] Exporting val split (GT boxes)...")
+    n_v = export_split(
+        paths["val_sample_20pct_txt"],
+        use_pseudo=False,
+        coco_dict=val_coco,
+        img_root=val_root,
+        images_out=images_val,
+        labels_out=labels_val,
+        split_tag="val",
+    )
+
+    class_names = _coco_thing_classes()
+    if len(class_names) != 80:
+        raise ValueError(f"Expected 80 COCO thing classes, got {len(class_names)}")
+    names_block = "\n".join(f"  {i}: {name}" for i, name in enumerate(class_names))
 
     data_yaml = export_dir / "data.yaml"
     data_yaml.write_text(
         f"""path: {export_dir.as_posix()}
 train: images/train
-val: {paths['val_all_txt'].as_posix()}
+val: images/val
 nc: 80
-names: []  # COCO 80 classes
-# exported labeled={n_l} weak={n_w}
+names:
+{names_block}
+# exported labeled={n_l} weak={n_w} val={n_v}
 """,
         encoding="utf-8",
     )
