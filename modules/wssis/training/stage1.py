@@ -82,6 +82,7 @@ def _stage1_forward_batch(
     active_signal=None,
     unified_weak_maps=True,
     use_sam_cache: bool = True,
+    sam_predictor=None,
 ):
     """Run teacher (SAM decoder) + GNN refiner for one batch."""
     from modules.vig_refinenet.sam_stage1_common import (
@@ -126,6 +127,7 @@ def _stage1_forward_batch(
             mask_size=mask_size,
             prompt_space=mask_size,
             image_embeddings=sam_embed,
+            predictor=sam_predictor,
         )
     weak_signal = build_weak_signal_tensor(
         prompts,
@@ -135,7 +137,12 @@ def _stage1_forward_batch(
         active_signal=active_signal if not unified_weak_maps else None,
         policy=prompt_policy,
     )
-    refined_logits = refiner(sam_embed, images, sam_masks_3, weak_signal)
+    refined_logits = refiner(
+        sam_embed.detach(),
+        images,
+        sam_masks_3.detach(),
+        weak_signal,
+    )
     return (
         refined_logits,
         sam_masks_3,
@@ -311,6 +318,12 @@ def train_stage1_gnn(
         raise FileNotFoundError(f"Missing SAM weights: {sam_ckpt}")
 
     sam = load_sam_vit_b(str(sam_ckpt), dev)
+    sam.eval()
+    for p in sam.parameters():
+        p.requires_grad = False
+    from modules.vig_refinenet.sam_stage1_common import get_sam_predictor, clear_sam_predictor
+
+    sam_predictor = get_sam_predictor(sam)
     pixel_mean, pixel_std = get_sam_pixel_stats(dev)
     refiner = build_sam_stage1_refiner(config).to(dev)
     ctx.log("GNN params: %s", f"{count_parameters(refiner):,}")
@@ -401,6 +414,7 @@ def train_stage1_gnn(
                 metas=meta,
                 unified_weak_maps=True,
                 use_sam_cache=use_sam_cache,
+                sam_predictor=sam_predictor,
             )
             for k in cache_epoch:
                 cache_epoch[k] += cstats.get(k, 0)
@@ -429,8 +443,13 @@ def train_stage1_gnn(
                 seg=f"{comps['seg_weighted']:.4f}",
                 sym=f"{comps['sym_weighted']:.4f}",
             )
+            del loss, logits, gt3, images, masks, meta, comps
             if stage1_max_steps and n_batches >= stage1_max_steps:
                 break
+
+        clear_sam_predictor(sam)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         train_mean = _mean_losses(train_totals, n_batches)
         if n_batches and use_sam_cache:
@@ -468,6 +487,7 @@ def train_stage1_gnn(
                     metas=meta,
                     unified_weak_maps=True,
                     use_sam_cache=use_sam_cache,
+                    sam_predictor=sam_predictor,
                 )
                 comps = _loss_components(criterion, logits, gt3)
                 _accumulate_losses(val_totals, comps)
@@ -478,6 +498,10 @@ def train_stage1_gnn(
                     bce_w=f"{comps['bce_weighted']:.4f}",
                     dice_w=f"{comps['dice_weighted']:.4f}",
                 )
+                del logits, sam_masks_3, sam_scores, gt3, images, masks, meta, comps
+        clear_sam_predictor(sam)
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         val_mean = _mean_losses(val_totals, vn)
 
         val_metrics = tracker.compute()

@@ -378,6 +378,31 @@ def build_weak_signal_tensor(
     return torch.from_numpy(np.stack(batch, axis=0)).to(device)
 
 
+_SAM_PREDICTOR_CACHE: Dict[int, object] = {}
+
+
+def get_sam_predictor(sam_model: nn.Module):
+    """Reuse one SamPredictor per SAM model (avoids VRAM leak from per-batch construction)."""
+    from segment_anything import SamPredictor
+
+    key = id(sam_model)
+    predictor = _SAM_PREDICTOR_CACHE.get(key)
+    if predictor is None:
+        predictor = SamPredictor(sam_model)
+        _SAM_PREDICTOR_CACHE[key] = predictor
+    return predictor
+
+
+def clear_sam_predictor(sam_model: nn.Module) -> None:
+    """Release cached image features held by SamPredictor."""
+    predictor = _SAM_PREDICTOR_CACHE.get(id(sam_model))
+    if predictor is not None:
+        predictor.reset_image()
+        if hasattr(predictor, "features"):
+            predictor.features = None
+        predictor.is_image_set = False
+
+
 @torch.no_grad()
 def decode_sam_masks_3_batch(
     sam_model: nn.Module,
@@ -386,6 +411,7 @@ def decode_sam_masks_3_batch(
     mask_size: int = 256,
     prompt_space: Optional[int] = None,
     image_embeddings: Optional[torch.Tensor] = None,
+    predictor=None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Run SAM prompt decoder → 3 proposal masks per sample.
@@ -401,59 +427,61 @@ def decode_sam_masks_3_batch(
         sam_masks: [B, 3, mask_size, mask_size] float in {0, 1}
         sam_scores: [B, 3] SAM quality scores
     """
-    from segment_anything import SamPredictor
-
     B, _, H, W = images.shape
     prompt_space = prompt_space or mask_size
     device = images.device
     all_masks = []
     all_scores = []
 
-    predictor = SamPredictor(sam_model)
-    for i in range(B):
-        scaled = _scale_prompt_to_image(prompts[i], prompt_space, H)
+    if predictor is None:
+        predictor = get_sam_predictor(sam_model)
 
-        if image_embeddings is not None:
+    try:
+        for i in range(B):
+            scaled = _scale_prompt_to_image(prompts[i], prompt_space, H)
+
             predictor.reset_image()
-            predictor.original_size = (H, W)
-            predictor.input_size = (H, W)
-            predictor.features = image_embeddings[i : i + 1].to(
-                device=predictor.device, dtype=next(sam_model.parameters()).dtype
+            if image_embeddings is not None:
+                predictor.original_size = (H, W)
+                predictor.input_size = (H, W)
+                predictor.features = image_embeddings[i : i + 1].to(
+                    device=predictor.device, dtype=next(sam_model.parameters()).dtype
+                )
+                predictor.is_image_set = True
+            else:
+                img_np = (
+                    images[i].permute(1, 2, 0).detach().cpu().numpy().clip(0, 1) * 255
+                ).astype(np.uint8)
+                predictor.set_image(img_np)
+
+            point_coords = None
+            point_labels = None
+            box = None
+            if "point" in scaled:
+                point_coords = np.array([scaled["point"]], dtype=np.float32)
+                point_labels = np.array([1], dtype=np.int32)
+            if "bbox" in scaled:
+                x, y, bw, bh = scaled["bbox"]
+                box = np.array([x, y, x + bw, y + bh], dtype=np.float32)
+
+            masks, scores, _ = predictor.predict(
+                point_coords=point_coords,
+                point_labels=point_labels,
+                box=box,
+                multimask_output=True,
             )
-            predictor.is_image_set = True
-        else:
-            img_np = (
-                images[i].permute(1, 2, 0).detach().cpu().numpy().clip(0, 1) * 255
-            ).astype(np.uint8)
-            predictor.set_image(img_np)
-
-        point_coords = None
-        point_labels = None
-        box = None
-        if "point" in scaled:
-            point_coords = np.array([scaled["point"]], dtype=np.float32)
-            point_labels = np.array([1], dtype=np.int32)
-        if "bbox" in scaled:
-            x, y, bw, bh = scaled["bbox"]
-            box = np.array([x, y, x + bw, y + bh], dtype=np.float32)
-
-        masks, scores, _ = predictor.predict(
-            point_coords=point_coords,
-            point_labels=point_labels,
-            box=box,
-            multimask_output=True,
-        )
-        # masks: [3, H, W] at original image resolution
-        m = torch.from_numpy(masks.astype(np.float32)).to(device)
-        if m.shape[-2:] != (mask_size, mask_size):
-            m = F.interpolate(
-                m.unsqueeze(0),
-                size=(mask_size, mask_size),
-                mode="bilinear",
-                align_corners=False,
-            )[0]
-        all_masks.append(m)
-        all_scores.append(torch.from_numpy(scores.astype(np.float32)).to(device))
+            m = torch.from_numpy(masks.astype(np.float32)).to(device, non_blocking=True)
+            if m.shape[-2:] != (mask_size, mask_size):
+                m = F.interpolate(
+                    m.unsqueeze(0),
+                    size=(mask_size, mask_size),
+                    mode="bilinear",
+                    align_corners=False,
+                )[0]
+            all_masks.append(m)
+            all_scores.append(torch.from_numpy(scores.astype(np.float32)).to(device, non_blocking=True))
+    finally:
+        clear_sam_predictor(sam_model)
 
     sam_masks = torch.stack(all_masks, dim=0)
     sam_scores = torch.stack(all_scores, dim=0)

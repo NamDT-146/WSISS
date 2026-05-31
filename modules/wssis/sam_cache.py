@@ -31,10 +31,11 @@ def load_sam_embedding_cache(
     if not path.exists():
         return None
     arr = np.load(path)
-    t = torch.from_numpy(arr).to(device=device, dtype=dtype)
+    t = torch.as_tensor(arr, device=device, dtype=dtype)
+    del arr
     if t.dim() == 4:
         t = t.squeeze(0)
-    return t
+    return t.contiguous()
 
 
 def fetch_sam_embeddings_batch(
