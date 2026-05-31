@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 from modules.wssis.experiments.registry import ExperimentSpec
 from modules.wssis.mask2former_datasets import (
@@ -54,9 +57,28 @@ def prepare_yolo_semi_weak_dataset(
         for ann in data["annotations"]:
             anns_by_img.setdefault(ann["image_id"], []).append(ann)
 
+        teacher = None
+        device = None
+        if use_pseudo and spec.use_gnn:
+            import torch
+            from modules.wssis.mask2former_teacher import WssisTeacherStack
+
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            logger.info(
+                "[yolo_export] Loading teacher (SAM + GNN) once for %s (%d images)...",
+                txt_path.name,
+                len(ids),
+            )
+            teacher = WssisTeacherStack(
+                device,
+                use_gnn=spec.use_gnn,
+                freeze_gnn=True,
+            )
+
         img_root = resolve_coco_image_dir(paths["coco_root"], "train")
         count = 0
-        for img_id in ids:
+        total = len(ids)
+        for idx, img_id in enumerate(ids):
             info = images.get(img_id)
             if not info:
                 continue
@@ -75,17 +97,8 @@ def prepare_yolo_semi_weak_dataset(
             anns = anns_by_img.get(img_id, [])
             h, w = info["height"], info["width"]
             pseudo_mode = use_pseudo
-            if pseudo_mode and spec.use_gnn:
+            if pseudo_mode and teacher is not None and device is not None:
                 try:
-                    import torch
-                    from modules.wssis.mask2former_teacher import WssisTeacherStack
-
-                    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-                    teacher = WssisTeacherStack(
-                        device,
-                        use_gnn=spec.use_gnn,
-                        freeze_gnn=True,
-                    )
                     img_np = np.array(pil_img)
                     mask_np_list, _, _ = coco_anns_to_masks_for_image(anns, h, w, max_objects=3)
                     img_t, masks_sam, native_hw = prepare_sam_teacher_inputs(img_np, mask_np_list)
@@ -133,9 +146,25 @@ def prepare_yolo_semi_weak_dataset(
 
             label_path.write_text("\n".join(lines), encoding="utf-8")
             count += 1
+            if idx == 0 or (idx + 1) % 100 == 0 or idx + 1 == total:
+                logger.info(
+                    "[yolo_export] %s: %d/%d images exported",
+                    txt_path.stem,
+                    idx + 1,
+                    total,
+                )
+
+        if teacher is not None:
+            del teacher
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         return count
 
+    logger.info("[yolo_export] Exporting labeled split (GT boxes)...")
     n_l = export_split(paths["labeled_5pct_txt"], use_pseudo=False)
+    logger.info("[yolo_export] Exporting weak split (teacher pseudo-labels)...")
     n_w = export_split(paths["weak_95pct_txt"], use_pseudo=True)
 
     data_yaml = export_dir / "data.yaml"

@@ -271,6 +271,10 @@ def _yolo_train(spec: ExperimentSpec, out_dir: Path, dry_run: bool = False) -> N
     smoke = get_smoke_profile()
     paths = build_coco_paths()
     export_dir = out_dir / "yolo_export"
+    print(
+        "[stage2] Preparing YOLO dataset (labeled GT + weak pseudo-labels via SAM/GNN). "
+        "This runs before ultralytics training and may take a while on weak_95pct."
+    )
     data_yaml = prepare_yolo_semi_weak_dataset(
         export_dir,
         spec,
