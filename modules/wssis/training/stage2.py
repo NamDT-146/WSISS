@@ -38,7 +38,7 @@ from modules.wssis.stage2_constants import (
 STAGE2_IMS_PER_BATCH = 128
 STAGE2_BASE_LR = 0.0002
 STAGE2_ITERS_PER_EPOCH = 75
-STAGE2_EARLY_STOP_PATIENCE = 3
+STAGE2_EARLY_STOP_PATIENCE = 5
 
 
 def _check_p0_artifacts(spec: ExperimentSpec) -> None:

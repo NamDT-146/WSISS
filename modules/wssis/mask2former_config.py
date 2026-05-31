@@ -50,7 +50,7 @@ def add_wssis_config(cfg: CN) -> None:
     cfg.WSSIS.WEAK_SIGNAL = "none"
     cfg.WSSIS.USE_FULL_VAL_FINAL = True
     cfg.WSSIS.ITERS_PER_EPOCH = 1000
-    cfg.WSSIS.EARLY_STOPPING_PATIENCE = 3
+    cfg.WSSIS.EARLY_STOPPING_PATIENCE = 5
     cfg.WSSIS.EARLY_STOPPING_MONITOR = "segm/AP"
     cfg.WSSIS.GNN_CHECKPOINT = ""
     cfg.WSSIS.FREEZE_GNN = False

@@ -56,41 +56,24 @@ def resolve_eval_metric(
     return None, None
 
 
-def resolve_metric_from_trainer(
+def _dataset_names_for_trainer(trainer, dataset_names: Optional[List[str]]) -> Optional[List[str]]:
+    if dataset_names is not None:
+        return dataset_names
+    if getattr(trainer, "cfg", None) is not None:
+        return list(getattr(trainer.cfg.DATASETS, "TEST", ()) or ())
+    return None
+
+
+def _resolve_metric_from_storage(
     trainer,
-    monitor_suffix: str = "segm/AP",
-    dataset_names: Optional[List[str]] = None,
+    monitor_suffix: str,
+    dataset_names: Optional[List[str]],
 ) -> Tuple[Optional[str], Optional[float]]:
-    """
-    Resolve eval metric after EvalHook runs.
-
-    ``DefaultTrainer.test()`` usually unwraps single-dataset results to
-    ``{segm: {AP: ...}}`` (storage key ``segm/AP``). If unwrapping did not happen,
-    keys look like ``wssis_val_1A/segm/AP``.
-    """
-    cached = getattr(trainer, "_wssis_eval_metric", None)
-    if isinstance(cached, dict):
-        key = cached.get("key")
-        val = cached.get("value")
-        if key is not None and val is not None and math.isfinite(float(val)):
-            return key, float(val)
-
-    names = dataset_names
-    if names is None and getattr(trainer, "cfg", None) is not None:
-        names = list(getattr(trainer.cfg.DATASETS, "TEST", ()) or ())
-
-    key, val = resolve_eval_metric(
-        getattr(trainer, "_last_eval_results", None) or {},
-        monitor_suffix,
-        names,
-    )
-    if val is not None:
-        return key, val
-
     storage = getattr(trainer, "storage", None)
     if storage is None:
         return None, None
 
+    names = _dataset_names_for_trainer(trainer, dataset_names)
     latest = storage.latest()
     ordered_keys = candidate_eval_metric_keys(monitor_suffix, names)
     for k in sorted(latest.keys()):
@@ -114,9 +97,55 @@ def resolve_metric_from_trainer(
     return None, None
 
 
+def resolve_fresh_eval_metric(
+    trainer,
+    monitor_suffix: str = "segm/AP",
+    dataset_names: Optional[List[str]] = None,
+) -> Tuple[Optional[str], Optional[float]]:
+    """
+    Resolve metric from the eval that just finished.
+
+    Uses ``_last_eval_results`` and event storage only — never a stale
+    ``_wssis_eval_metric`` cache (see ``cache_eval_metric_on_trainer``).
+    """
+    names = _dataset_names_for_trainer(trainer, dataset_names)
+    key, val = resolve_eval_metric(
+        getattr(trainer, "_last_eval_results", None) or {},
+        monitor_suffix,
+        names,
+    )
+    if val is not None:
+        return key, val
+    return _resolve_metric_from_storage(trainer, monitor_suffix, names)
+
+
+def resolve_metric_from_trainer(
+    trainer,
+    monitor_suffix: str = "segm/AP",
+    dataset_names: Optional[List[str]] = None,
+) -> Tuple[Optional[str], Optional[float]]:
+    """
+    Resolve eval metric after EvalHook runs.
+
+    Prefers fresh eval results; falls back to cached metric only when fresh
+    sources are unavailable (e.g. outside ``WssisEvalHook._do_eval``).
+    """
+    key, val = resolve_fresh_eval_metric(trainer, monitor_suffix, dataset_names)
+    if val is not None:
+        return key, val
+
+    cached = getattr(trainer, "_wssis_eval_metric", None)
+    if isinstance(cached, dict):
+        ckey = cached.get("key")
+        cval = cached.get("value")
+        if ckey is not None and cval is not None and math.isfinite(float(cval)):
+            return ckey, float(cval)
+    return None, None
+
+
 def cache_eval_metric_on_trainer(trainer, monitor_suffix: str = "segm/AP") -> None:
     """Store resolved AP on trainer for early stopping / best checkpoint hooks."""
-    key, val = resolve_metric_from_trainer(trainer, monitor_suffix)
+    key, val = resolve_fresh_eval_metric(trainer, monitor_suffix)
     if val is not None:
         trainer._wssis_eval_metric = {"key": key, "value": val}
     else:
@@ -175,6 +204,8 @@ class WssisEvalHook(EvalHook):
             self._early_stopping_hook,
             self._best_checkpointer_hook,
         )
+        self.trainer._wssis_best_saved_this_eval = False
+        self.trainer._wssis_best_ckpt_note = ""
         cache_eval_metric_on_trainer(self.trainer, monitor_suffix)
         if self._best_checkpointer_hook is not None:
             self._best_checkpointer_hook.on_eval_complete(self.trainer)
@@ -205,7 +236,7 @@ class WssisEarlyStoppingHook(HookBase):
     def __init__(
         self,
         eval_period: int,
-        patience: int = 3,
+        patience: int = 5,
         monitor_suffix: str = "segm/AP",
         mode: str = "max",
         min_delta: float = 1e-4,
@@ -252,7 +283,7 @@ class WssisEarlyStoppingHook(HookBase):
         self._step_early_stop(self.trainer, next_iter)
 
     def _step_early_stop(self, trainer, next_iter: int) -> None:
-        metric_key, value = resolve_metric_from_trainer(trainer, self._monitor_suffix)
+        metric_key, value = resolve_fresh_eval_metric(trainer, self._monitor_suffix)
         if value is None:
             sample_keys = []
             if getattr(trainer, "storage", None) is not None:
@@ -262,33 +293,75 @@ class WssisEarlyStoppingHook(HookBase):
                     if "AP" in k or "segm" in k
                 ][:16]
             self._logger.warning(
-                "Early stopping: no metric matching %r in eval results or storage "
+                "[EarlyStop] iter %d: no metric matching %r in eval results or storage "
                 "(AP-related keys: %s)",
+                next_iter,
                 self._monitor_suffix,
                 sample_keys or "(none)",
             )
             return
 
+        epoch = next_iter // self._period
+        prev_best = self._es.best
         improved = self._es.step({self._es.monitor: value})
+
+        ckpt_note = getattr(trainer, "_wssis_best_ckpt_note", "")
+        if ckpt_note:
+            self._logger.info("[EarlyStop] iter %d (epoch %d): %s", next_iter, epoch, ckpt_note)
+
         if improved:
+            if prev_best is None:
+                self._logger.info(
+                    "[EarlyStop] iter %d (epoch %d): new best %s=%.4f (%s) — "
+                    "patience reset (0/%d)",
+                    next_iter,
+                    epoch,
+                    self._monitor_suffix,
+                    value,
+                    metric_key,
+                    self._es.patience,
+                )
+            else:
+                self._logger.info(
+                    "[EarlyStop] iter %d (epoch %d): new best %s=%.4f (%s), "
+                    "was %.4f — patience reset (0/%d)",
+                    next_iter,
+                    epoch,
+                    self._monitor_suffix,
+                    value,
+                    metric_key,
+                    prev_best,
+                    self._es.patience,
+                )
+        elif self._es.should_stop:
             self._logger.info(
-                "Early stopping: new best %s=%.4f (%s)",
+                "[EarlyStop] iter %d (epoch %d): STOP — no improvement for %d eval(s); "
+                "last %s=%.4f (%s), best=%.4f",
+                next_iter,
+                epoch,
+                self._es.patience,
                 self._monitor_suffix,
                 value,
                 metric_key,
-            )
-        elif self._es.should_stop:
-            epoch = next_iter // self._period
-            self._logger.info(
-                "Early stopping at epoch %d / iter %d (patience=%d, best %s=%.4f)",
-                epoch,
-                trainer.iter,
-                self._es.patience,
-                self._monitor_suffix,
                 self._es.best,
             )
             trainer.max_iter = min(trainer.max_iter, next_iter)
             trainer._wssis_stop_training = True
+        else:
+            remaining = self._es.patience - self._es.counter
+            self._logger.info(
+                "[EarlyStop] iter %d (epoch %d): no improvement — %s=%.4f (%s), "
+                "best=%.4f, patience %d/%d (%d eval(s) until stop)",
+                next_iter,
+                epoch,
+                self._monitor_suffix,
+                value,
+                metric_key,
+                self._es.best,
+                self._es.counter,
+                self._es.patience,
+                remaining,
+            )
 
 
 class WssisBestCheckpointer(HookBase):
@@ -330,7 +403,7 @@ class WssisBestCheckpointer(HookBase):
         self._update_best(trainer)
 
     def _update_best(self, trainer) -> None:
-        metric_key, latest_metric = resolve_metric_from_trainer(
+        metric_key, latest_metric = resolve_fresh_eval_metric(
             trainer, self._monitor_suffix
         )
         if latest_metric is None:
@@ -341,9 +414,13 @@ class WssisBestCheckpointer(HookBase):
                     for k in trainer.storage.latest().keys()
                     if "AP" in k or "segm" in k
                 ][:16]
+            trainer._wssis_best_ckpt_note = (
+                f"model_best skipped (no {self._monitor_suffix} in eval results)"
+            )
             self._logger.warning(
-                "BestCheckpointer: no metric matching %r in eval results or storage "
+                "[BestCkpt] iter %d: no metric matching %r in eval results or storage "
                 "(AP-related keys: %s). Skipping best checkpoint.",
+                trainer.iter + 1,
                 self._monitor_suffix,
                 sample_keys or "(none)",
             )
@@ -351,6 +428,9 @@ class WssisBestCheckpointer(HookBase):
 
         metric_iter = trainer.iter + 1
         if math.isnan(latest_metric) or math.isinf(latest_metric):
+            trainer._wssis_best_ckpt_note = (
+                f"model_best skipped (non-finite {self._monitor_suffix}={latest_metric})"
+            )
             return
 
         if self.best_metric is None:
@@ -359,30 +439,50 @@ class WssisBestCheckpointer(HookBase):
             self._checkpointer.save(
                 self._file_prefix, iteration=metric_iter
             )
+            trainer._wssis_best_saved_this_eval = True
+            trainer._wssis_best_ckpt_note = (
+                f"saved model_best ({self._monitor_suffix}={latest_metric:.4f}, first eval)"
+            )
             self._logger.info(
-                "Saved first model at %s=%.4f (%s) @ iter %d",
+                "[BestCkpt] iter %d: saved %s (first eval, %s=%.4f, key=%s)",
+                metric_iter,
+                self._file_prefix,
                 self._monitor_suffix,
                 latest_metric,
                 metric_key,
-                metric_iter,
             )
         elif self._compare(latest_metric, self.best_metric):
+            prev_best = self.best_metric
+            prev_iter = self.best_iter
             self._checkpointer.save(
                 self._file_prefix, iteration=metric_iter
             )
-            self._logger.info(
-                "Saved best model: %s=%.4f (%s) > %.4f @ iter %d",
-                self._monitor_suffix,
-                latest_metric,
-                metric_key,
-                self.best_metric,
-                self.best_iter,
-            )
             self.best_metric = latest_metric
             self.best_iter = metric_iter
-        else:
+            trainer._wssis_best_saved_this_eval = True
+            trainer._wssis_best_ckpt_note = (
+                f"saved model_best ({self._monitor_suffix}={latest_metric:.4f} "
+                f"> {prev_best:.4f} @ iter {prev_iter})"
+            )
             self._logger.info(
-                "Not saving best: %s=%.4f (%s) vs best %.4f @ iter %d",
+                "[BestCkpt] iter %d: saved %s (%s=%.4f > %.4f @ iter %d, key=%s)",
+                metric_iter,
+                self._file_prefix,
+                self._monitor_suffix,
+                latest_metric,
+                prev_best,
+                prev_iter,
+                metric_key,
+            )
+        else:
+            trainer._wssis_best_ckpt_note = (
+                f"model_best not saved ({self._monitor_suffix}={latest_metric:.4f} "
+                f"<= best {self.best_metric:.4f} @ iter {self.best_iter})"
+            )
+            self._logger.info(
+                "[BestCkpt] iter %d: not saved (%s=%.4f, key=%s) — "
+                "current best %.4f @ iter %d",
+                metric_iter,
                 self._monitor_suffix,
                 latest_metric,
                 metric_key,
