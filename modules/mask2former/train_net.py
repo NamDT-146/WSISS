@@ -402,7 +402,7 @@ class Trainer(DefaultTrainer):
                     self.before_step()
                     self.run_step()
                     self.after_step()
-                self.iter += 1
+                    self.iter += 1
             except Exception:
                 logger.exception("Exception during training:")
                 raise
@@ -435,6 +435,7 @@ class Trainer(DefaultTrainer):
             WssisBestCheckpointer,
             WssisEarlyStoppingHook,
             WssisEvalHook,
+            WssisTrainProgressHook,
         )
 
         eval_period = cfg.TEST.EVAL_PERIOD
@@ -496,6 +497,8 @@ class Trainer(DefaultTrainer):
         def _append_wssis_train_hooks(out: List[Any]) -> None:
             if early_stop_hook is not None:
                 out.append(early_stop_hook)
+            if comm.is_main_process():
+                out.append(WssisTrainProgressHook())
 
         def _insert_before_writer(out: List[Any], bundle: List[Any]) -> None:
             for i, hook in enumerate(out):

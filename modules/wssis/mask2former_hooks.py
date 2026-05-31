@@ -399,3 +399,52 @@ class WssisBestCheckpointer(HookBase):
             and next_iter != self.trainer.max_iter
         ):
             self.on_eval_complete(self.trainer)
+
+
+class WssisTrainProgressHook(HookBase):
+    """tqdm progress bar on the main process (WSSIS custom train loop)."""
+
+    def __init__(self):
+        self._pbar = None
+
+    def before_train(self):
+        if not comm.is_main_process():
+            return
+        try:
+            from tqdm import tqdm
+        except ImportError:
+            return
+
+        self._pbar = tqdm(
+            total=self.trainer.max_iter,
+            initial=self.trainer.start_iter,
+            desc="Mask2Former",
+            unit="iter",
+            dynamic_ncols=True,
+        )
+
+    def after_step(self):
+        if self._pbar is None:
+            return
+
+        storage = getattr(self.trainer, "storage", None)
+        postfix = {}
+        if storage is not None:
+            for key in ("total_loss", "loss_distill", "lr"):
+                try:
+                    val = storage.history(key).latest()
+                    if val is not None:
+                        postfix[key] = f"{float(val):.4g}"
+                except KeyError:
+                    pass
+        if postfix:
+            self._pbar.set_postfix(postfix, refresh=False)
+
+        self._pbar.update(1)
+
+    def after_train(self):
+        if self._pbar is not None:
+            if self._pbar.n < self.trainer.iter:
+                self._pbar.update(self.trainer.iter - self._pbar.n)
+            self._pbar.close()
+            self._pbar = None
