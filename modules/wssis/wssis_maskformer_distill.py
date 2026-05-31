@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 
 from modules.wssis.mask2former_losses import FeatureProjector, feature_distillation_loss
-from modules.wssis.sam_cache import load_sam_embedding_cache
+from modules.wssis.sam_cache import fetch_sam_embeddings_batch, load_sam_embedding_cache
 
 
 def _backbone_feat_dim(model: nn.Module, feat_name: str) -> int:
@@ -21,11 +21,53 @@ def _backbone_feat_dim(model: nn.Module, feat_name: str) -> int:
     return 384
 
 
+def _load_sam_embed_for_rec(
+    rec: dict,
+    device: torch.device,
+    model: nn.Module,
+) -> Optional[torch.Tensor]:
+    image_id = int(rec.get("image_id", 0))
+    split = rec.get("split", "train")
+    emb = load_sam_embedding_cache(image_id, split, device)
+    if emb is not None:
+        return emb
+
+    if "image" not in rec:
+        return None
+
+    if getattr(model, "_wssis_distill_sam", None) is None:
+        from modules.vig_refinenet.sam_stage1_common import (
+            get_sam_pixel_stats,
+            load_sam_vit_b,
+        )
+        from modules.wssis.paths import sam_vit_b_checkpoint
+
+        model._wssis_distill_sam = load_sam_vit_b(str(sam_vit_b_checkpoint()), device)
+        mean, std = get_sam_pixel_stats(device)
+        model._wssis_distill_sam_mean = mean
+        model._wssis_distill_sam_std = std
+
+    img = rec["image"].float().to(device)
+    if img.max() > 1.5:
+        img = img / 255.0
+    meta = {"image_id": image_id, "split": split}
+    batch, _ = fetch_sam_embeddings_batch(
+        [meta],
+        model._wssis_distill_sam,
+        img.unsqueeze(0),
+        model._wssis_distill_sam_mean,
+        model._wssis_distill_sam_std,
+        use_cache=False,
+    )
+    return batch[0]
+
+
 def _compute_distill_loss(
     batched_inputs: List[dict],
     backbone_features: Optional[Dict[str, torch.Tensor]],
     projector: FeatureProjector,
     feat_name: str,
+    model: nn.Module,
 ) -> Optional[torch.Tensor]:
     if backbone_features is None or feat_name not in backbone_features:
         return None
@@ -44,10 +86,7 @@ def _compute_distill_loss(
     valid_rows: List[int] = []
 
     for local_i, batch_i in enumerate(weak_indices):
-        rec = batched_inputs[batch_i]
-        image_id = int(rec.get("image_id", 0))
-        split = rec.get("split", "train")
-        emb = load_sam_embedding_cache(image_id, split, device)
+        emb = _load_sam_embed_for_rec(batched_inputs[batch_i], device, model)
         if emb is None:
             continue
         sam_embeds.append(emb)
@@ -78,7 +117,7 @@ def attach_wssis_distillation(model: nn.Module, cfg) -> nn.Module:
     distill_weight = float(getattr(wssis, "DISTILL_WEIGHT", 1.0))
 
     projector = FeatureProjector(m2f_dim=feat_dim, sam_dim=256)
-    model.wssis_projector = projector
+    model.add_module("wssis_projector", projector)
     model.wssis_distill_weight = distill_weight
     model.wssis_distill_feat = feat_name
 
@@ -105,6 +144,7 @@ def attach_wssis_distillation(model: nn.Module, cfg) -> nn.Module:
             captured.get("features"),
             projector,
             feat_name,
+            model,
         )
         if distill is not None:
             losses["loss_distill"] = distill * distill_weight

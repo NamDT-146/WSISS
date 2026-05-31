@@ -335,9 +335,16 @@ class Trainer(DefaultTrainer):
         storage = self.storage
         if storage is None:
             return
-        loss_ce = storage.history("loss_ce").latest() if storage.history("loss_ce") else None
-        loss_mask = storage.history("loss_mask").latest() if storage.history("loss_mask") else None
-        loss_dice = storage.history("loss_dice").latest() if storage.history("loss_dice") else None
+
+        def _latest(name: str):
+            buf = storage.histories().get(name)
+            if buf is None or len(buf) == 0:
+                return None
+            return buf.latest()
+
+        loss_ce = _latest("loss_ce")
+        loss_mask = _latest("loss_mask")
+        loss_dice = _latest("loss_dice")
         sup = 0.0
         for v in (loss_ce, loss_mask, loss_dice):
             if v is not None:
@@ -349,11 +356,7 @@ class Trainer(DefaultTrainer):
             sup * max(0.0, 1.0 - ratio) if sup else 0.0,
             smoothing_hint=False,
         )
-        loss_distill = (
-            storage.history("loss_distill").latest()
-            if storage.history("loss_distill")
-            else None
-        )
+        loss_distill = _latest("loss_distill")
         storage.put_scalar(
             "wssis/distill_loss",
             float(loss_distill) if loss_distill is not None else 0.0,
