@@ -6,6 +6,8 @@ import os
 
 from detectron2.config import CfgNode as CN
 
+from modules.wssis.stage2_constants import STAGE2_STUDENT_IMAGE_SIZE
+
 
 def resolve_wssis_num_gpus(explicit: int | None = None) -> int:
     """GPU count from launch arg or WSSIS_NUM_GPUS (fallback: visible CUDA devices)."""
@@ -58,6 +60,7 @@ def add_wssis_config(cfg: CN) -> None:
     cfg.WSSIS.SMOKE = False
     cfg.WSSIS.DISTILL_BACKBONE_FEAT = "res4"
     cfg.WSSIS.DISTILL_FEAT_DIM = 0  # 0 = auto from backbone channels
+    cfg.WSSIS.STUDENT_IMAGE_SIZE = STAGE2_STUDENT_IMAGE_SIZE
 
 
 def apply_smoke_to_cfg(cfg: CN) -> None:
