@@ -28,6 +28,7 @@ from modules.wssis.paths import (
 from modules.wssis.run_context import RunContext
 from modules.wssis.proc_utils import run_subprocess
 from modules.wssis.smoke_profile import apply_smoke_env, get_smoke_profile, is_smoke_mode
+from modules.wssis.mask2former_config import align_ims_per_batch, resolve_wssis_num_gpus
 
 # Base Mask2Former config uses IMS_PER_BATCH=16 / BASE_LR=0.0001; doubled for WSSIS Stage-2.
 STAGE2_IMS_PER_BATCH = 32
@@ -160,6 +161,15 @@ def _mask2former_train(spec: ExperimentSpec, out_dir: Path, dry_run: bool = Fals
         use_full_val = smoke.m2f_use_full_val_final
         early_patience = 0
         image_size = smoke.m2f_image_size
+
+    num_gpus = resolve_wssis_num_gpus()
+    aligned_ims = align_ims_per_batch(ims_batch, num_gpus)
+    if aligned_ims != ims_batch:
+        print(
+            f"[stage2] IMS_PER_BATCH {ims_batch} -> {aligned_ims} "
+            f"(must divide evenly across {num_gpus} GPU(s))"
+        )
+        ims_batch = aligned_ims
 
     generated = out_dir / "mask2former_override.yaml"
     split_txt = _split_file_for_spec(spec)

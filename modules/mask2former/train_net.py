@@ -477,9 +477,10 @@ def setup(args):
     if ensure_wssis_datasets_in_cfg is not None:
         ensure_wssis_datasets_in_cfg(cfg)
     try:
-        from modules.wssis.mask2former_config import apply_smoke_to_cfg
+        from modules.wssis.mask2former_config import apply_gpu_batch_alignment, apply_smoke_to_cfg
 
         apply_smoke_to_cfg(cfg)
+        apply_gpu_batch_alignment(cfg, getattr(args, "num_gpus", None))
     except ImportError:
         pass
     cfg.freeze()
