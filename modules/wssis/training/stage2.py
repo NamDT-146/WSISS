@@ -29,12 +29,15 @@ from modules.wssis.run_context import RunContext
 from modules.wssis.proc_utils import run_subprocess
 from modules.wssis.smoke_profile import apply_smoke_env, get_smoke_profile, is_smoke_mode
 from modules.wssis.mask2former_config import align_ims_per_batch, resolve_wssis_num_gpus
-from modules.wssis.stage2_constants import STAGE2_STUDENT_IMAGE_SIZE
+from modules.wssis.stage2_constants import (
+    STAGE2_DATALOADER_NUM_WORKERS,
+    STAGE2_STUDENT_IMAGE_SIZE,
+)
 
 # Base Mask2Former config uses IMS_PER_BATCH=16 / BASE_LR=0.0001; doubled for WSSIS Stage-2.
 STAGE2_IMS_PER_BATCH = 128
 STAGE2_BASE_LR = 0.0002
-STAGE2_ITERS_PER_EPOCH = 250
+STAGE2_ITERS_PER_EPOCH = 75
 STAGE2_EARLY_STOP_PATIENCE = 3
 
 
@@ -154,6 +157,7 @@ def _mask2former_train(spec: ExperimentSpec, out_dir: Path, dry_run: bool = Fals
     use_full_val = True
     early_patience = STAGE2_EARLY_STOP_PATIENCE
     image_size = STAGE2_STUDENT_IMAGE_SIZE
+    dataloader_workers = STAGE2_DATALOADER_NUM_WORKERS
     if smoke:
         max_iter = smoke.m2f_max_iter
         eval_period = smoke.m2f_eval_period
@@ -162,6 +166,7 @@ def _mask2former_train(spec: ExperimentSpec, out_dir: Path, dry_run: bool = Fals
         use_full_val = smoke.m2f_use_full_val_final
         early_patience = 0
         image_size = smoke.m2f_image_size
+        dataloader_workers = 0
 
     num_gpus = resolve_wssis_num_gpus()
     aligned_ims = align_ims_per_batch(ims_batch, num_gpus)
@@ -212,6 +217,8 @@ TEST:
   EVAL_PERIOD: {eval_period}
 INPUT:
   IMAGE_SIZE: {image_size}
+DATALOADER:
+  NUM_WORKERS: {dataloader_workers}
 SOLVER:
   MAX_ITER: {max_iter}
   STEPS: ({lr_steps[0]}, {lr_steps[1]})

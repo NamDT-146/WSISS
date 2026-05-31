@@ -202,10 +202,24 @@ class Trainer(DefaultTrainer):
                     use_gnn=getattr(cfg.WSSIS, "USE_GNN", True),
                     freeze_gnn=getattr(cfg.WSSIS, "FREEZE_GNN", False),
                 )
+                mapper = WssisSemiWeakMapper(cfg, True, teacher=teacher)
+                # Online SAM/GNN in mapper must run in main process; keep eval NUM_WORKERS.
+                eval_workers = int(cfg.DATALOADER.NUM_WORKERS)
+                if eval_workers > 0:
+                    logging.getLogger(__name__).info(
+                        "Semi-weak train loader: NUM_WORKERS=0 (GPU teacher in mapper); "
+                        "eval/test loaders keep NUM_WORKERS=%d",
+                        eval_workers,
+                    )
                 cfg.defrost()
                 cfg.DATALOADER.NUM_WORKERS = 0
                 cfg.freeze()
-                mapper = WssisSemiWeakMapper(cfg, True, teacher=teacher)
+                loader = build_detection_train_loader(cfg, mapper=mapper)
+                if eval_workers > 0:
+                    cfg.defrost()
+                    cfg.DATALOADER.NUM_WORKERS = eval_workers
+                    cfg.freeze()
+                return loader
             else:
                 mapper = COCOInstanceNewBaselineDatasetMapper(cfg, True)
             return build_detection_train_loader(cfg, mapper=mapper)
