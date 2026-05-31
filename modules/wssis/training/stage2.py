@@ -32,9 +32,9 @@ from modules.wssis.mask2former_config import align_ims_per_batch, resolve_wssis_
 from modules.wssis.stage2_constants import STAGE2_STUDENT_IMAGE_SIZE
 
 # Base Mask2Former config uses IMS_PER_BATCH=16 / BASE_LR=0.0001; doubled for WSSIS Stage-2.
-STAGE2_IMS_PER_BATCH = 32
+STAGE2_IMS_PER_BATCH = 64
 STAGE2_BASE_LR = 0.0002
-STAGE2_ITERS_PER_EPOCH = 1000
+STAGE2_ITERS_PER_EPOCH = 500
 STAGE2_EARLY_STOP_PATIENCE = 3
 
 
