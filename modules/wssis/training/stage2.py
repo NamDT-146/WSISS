@@ -29,6 +29,7 @@ from modules.wssis.run_context import RunContext
 from modules.wssis.proc_utils import run_subprocess
 from modules.wssis.smoke_profile import apply_smoke_env, get_smoke_profile, is_smoke_mode
 from modules.wssis.mask2former_config import align_ims_per_batch, resolve_wssis_num_gpus
+from modules.wssis.stage2_constants import STAGE2_STUDENT_IMAGE_SIZE
 
 # Base Mask2Former config uses IMS_PER_BATCH=16 / BASE_LR=0.0001; doubled for WSSIS Stage-2.
 STAGE2_IMS_PER_BATCH = 32
@@ -152,7 +153,7 @@ def _mask2former_train(spec: ExperimentSpec, out_dir: Path, dry_run: bool = Fals
     ims_batch = STAGE2_IMS_PER_BATCH
     use_full_val = True
     early_patience = STAGE2_EARLY_STOP_PATIENCE
-    image_size = 1024
+    image_size = STAGE2_STUDENT_IMAGE_SIZE
     if smoke:
         max_iter = smoke.m2f_max_iter
         eval_period = smoke.m2f_eval_period
@@ -200,6 +201,7 @@ WSSIS:
   EARLY_STOPPING_PATIENCE: {early_patience}
   EARLY_STOPPING_MONITOR: segm/AP
   SMOKE: {str(is_smoke_mode()).lower()}
+  STUDENT_IMAGE_SIZE: {image_size}
 DATASETS:
   TRAIN: ("{train_ds}",)
   TEST: ("{val_ds}",)
@@ -283,10 +285,12 @@ def _yolo_train(spec: ExperimentSpec, out_dir: Path, dry_run: bool = False) -> N
         epochs = smoke.yolo_epochs
         batch = smoke.batch_size
     model = YOLO("yolov8n-seg.pt")
+    imgsz = STAGE2_STUDENT_IMAGE_SIZE if not smoke else get_smoke_profile().m2f_image_size
     model.train(
         data=str(data_yaml),
         epochs=epochs,
         batch=batch,
+        imgsz=imgsz,
         patience=STAGE2_EARLY_STOP_PATIENCE if not smoke else 0,
         project=str(out_dir),
         name="yolov8_seg",

@@ -6,21 +6,28 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from modules.wssis.stage2_constants import SAM_EMBED_SPATIAL
+
 
 class FeatureProjector(nn.Module):
-    """Align Mask2Former stride-16 features to SAM embedding space (64x64)."""
+    """Align Mask2Former stride-16 features to SAM embedding space (64×64).
 
-    def __init__(self, m2f_dim: int = 256, sam_dim: int = 256):
+    Swin-T ``res4`` is 384-d at stride 16; student input 512 → 32×32 before upsample
+    to SAM's 64×64 embedding grid (PLAN §4A).
+    """
+
+    def __init__(self, m2f_dim: int = 384, sam_dim: int = 256):
         super().__init__()
+        self.sam_spatial = SAM_EMBED_SPATIAL
         self.proj = nn.Sequential(
             nn.Conv2d(m2f_dim, sam_dim, kernel_size=1, bias=False),
-            nn.GroupNorm(32, sam_dim),
+            nn.LayerNorm([sam_dim, SAM_EMBED_SPATIAL, SAM_EMBED_SPATIAL]),
         )
 
     def forward(self, m2f_feat_stride16: torch.Tensor) -> torch.Tensor:
         upsampled = F.interpolate(
             m2f_feat_stride16,
-            size=(64, 64),
+            size=(self.sam_spatial, self.sam_spatial),
             mode="bilinear",
             align_corners=False,
         )

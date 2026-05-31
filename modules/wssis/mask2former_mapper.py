@@ -11,6 +11,7 @@ from detectron2.data import detection_utils as utils
 from mask2former import COCOInstanceNewBaselineDatasetMapper
 
 from modules.wssis.mask2former_datasets import coco_anns_to_masks_for_image
+from modules.wssis.teacher_pseudo import map_teacher_pseudo_to_size, prepare_sam_teacher_inputs
 
 
 class WssisSemiWeakMapper(COCOInstanceNewBaselineDatasetMapper):
@@ -55,7 +56,7 @@ class WssisSemiWeakMapper(COCOInstanceNewBaselineDatasetMapper):
         if not mask_np_list:
             return []
 
-        img_t = torch.from_numpy(image.copy()).permute(2, 0, 1).float() / 255.0
+        img_t, masks_sam, native_hw = prepare_sam_teacher_inputs(image, mask_np_list)
         if self._teacher.sam is not None:
             img_t = img_t.to(next(self._teacher.sam.parameters()).device)
 
@@ -67,10 +68,15 @@ class WssisSemiWeakMapper(COCOInstanceNewBaselineDatasetMapper):
         }
         pseudo_masks, cat_ids = self._teacher.generate_pseudo_for_image(
             img_t,
-            mask_np_list,
+            masks_sam,
             meta,
             prompt_policy="train_online",
             signal_type=self._weak_signal if self._weak_signal != "none" else "mixed",
+        )
+        pseudo_masks = map_teacher_pseudo_to_size(
+            pseudo_masks,
+            native_hw=native_hw,
+            target_size=None,
         )
 
         out = []

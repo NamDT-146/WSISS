@@ -15,6 +15,8 @@ from modules.wssis.mask2former_datasets import (
 )
 from modules.wssis.paths import build_coco_paths, resolve_coco_image_dir
 from modules.wssis.smoke_profile import get_smoke_profile
+from modules.wssis.stage2_constants import STAGE2_STUDENT_IMAGE_SIZE
+from modules.wssis.teacher_pseudo import map_teacher_pseudo_to_size, prepare_sam_teacher_inputs
 from modules.vig_refinenet.coco_sam_stage1_dataset import filter_coco_json, load_image_ids_from_txt
 
 
@@ -63,8 +65,10 @@ def prepare_yolo_semi_weak_dataset(
                 src = img_root / Path(info["file_name"]).name
             stem = f"{img_id:012d}"
             dst_img = images_out / f"{stem}.jpg"
-            if not dst_img.exists():
-                Image.open(src).convert("RGB").save(dst_img)
+            pil_img = Image.open(src).convert("RGB")
+            student_size = STAGE2_STUDENT_IMAGE_SIZE
+            pil_student = pil_img.resize((student_size, student_size), Image.BILINEAR)
+            pil_student.save(dst_img)
 
             label_path = labels_out / f"{stem}.txt"
             lines = []
@@ -82,25 +86,31 @@ def prepare_yolo_semi_weak_dataset(
                         use_gnn=spec.use_gnn,
                         freeze_gnn=True,
                     )
-                    img = Image.open(dst_img).convert("RGB").resize((1024, 1024))
-                    img_t = torch.from_numpy(np.array(img)).permute(2, 0, 1).float() / 255.0
+                    img_np = np.array(pil_img)
                     mask_np_list, _, _ = coco_anns_to_masks_for_image(anns, h, w, max_objects=3)
+                    img_t, masks_sam, native_hw = prepare_sam_teacher_inputs(img_np, mask_np_list)
+                    img_t = img_t.to(device)
                     meta = {
                         "image_id": img_id,
                         "ann_ids": [a["id"] for a in anns[: len(mask_np_list)]],
                         "split": "train",
                     }
                     pseudo, cats = teacher.generate_pseudo_for_image(
-                        img_t, mask_np_list, meta, prompt_policy="train_online"
+                        img_t, masks_sam, meta, prompt_policy="train_online"
+                    )
+                    pseudo = map_teacher_pseudo_to_size(
+                        pseudo,
+                        native_hw=native_hw,
+                        target_size=student_size,
                     )
                     for pm, cat in zip(pseudo, cats):
                         ys, xs = np.where(pm > 0)
                         if len(xs) == 0:
                             continue
-                        cx = ((xs.min() + xs.max()) / 2) / w
-                        cy = ((ys.min() + ys.max()) / 2) / h
-                        bw = (xs.max() - xs.min() + 1) / w
-                        bh = (ys.max() - ys.min() + 1) / h
+                        cx = ((xs.min() + xs.max()) / 2) / student_size
+                        cy = ((ys.min() + ys.max()) / 2) / student_size
+                        bw = (xs.max() - xs.min() + 1) / student_size
+                        bh = (ys.max() - ys.min() + 1) / student_size
                         lines.append(f"{max(0, cat)} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}")
                 except Exception:
                     pseudo_mode = False
@@ -112,8 +122,13 @@ def prepare_yolo_semi_weak_dataset(
                     x, y, bw, bh = ann["bbox"]
                     cx = (x + bw / 2) / w
                     cy = (y + bh / 2) / h
+                    # Map COCO native bbox to student square canvas.
+                    cx_s = cx
+                    cy_s = cy
+                    bw_s = bw / w
+                    bh_s = bh / h
                     lines.append(
-                        f"{ann['category_id']} {cx:.6f} {cy:.6f} {bw/w:.6f} {bh/h:.6f}"
+                        f"{ann['category_id']} {cx_s:.6f} {cy_s:.6f} {bw_s:.6f} {bh_s:.6f}"
                     )
 
             label_path.write_text("\n".join(lines), encoding="utf-8")

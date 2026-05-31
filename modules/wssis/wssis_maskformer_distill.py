@@ -9,6 +9,7 @@ import torch.nn as nn
 
 from modules.wssis.mask2former_losses import FeatureProjector, feature_distillation_loss
 from modules.wssis.sam_cache import fetch_sam_embeddings_batch, load_sam_embedding_cache
+from modules.wssis.stage2_constants import SAM_EMBED_SPATIAL
 
 
 def _backbone_feat_dim(model: nn.Module, feat_name: str) -> int:
@@ -99,6 +100,13 @@ def _compute_distill_loss(
         res4_weak = res4_weak[valid_rows]
 
     sam_stack = torch.stack(sam_embeds, dim=0)
+    if sam_stack.shape[-2:] != (SAM_EMBED_SPATIAL, SAM_EMBED_SPATIAL):
+        sam_stack = torch.nn.functional.interpolate(
+            sam_stack,
+            size=(SAM_EMBED_SPATIAL, SAM_EMBED_SPATIAL),
+            mode="bilinear",
+            align_corners=False,
+        )
     aligned = projector(res4_weak)
     return feature_distillation_loss(aligned, sam_stack)
 
