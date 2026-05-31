@@ -278,13 +278,12 @@ def train_stage1_gnn(
     ctx.save_config(config)
 
     batch_size = training_cfg.get("batch_size", 4)
+    num_workers = data_cfg.get("num_workers", 4)
+    stage1_max_steps = training_cfg.get("max_steps")
+    max_epochs = training_cfg.get("epochs", 30)
     if smoke:
         batch_size = smoke.batch_size
-    num_workers = data_cfg.get("num_workers", 4)
-    if smoke:
         num_workers = min(num_workers, 0)
-    stage1_max_steps = training_cfg.get("max_steps")
-    if smoke:
         stage1_max_steps = smoke.stage1_max_steps
         max_epochs = min(max_epochs, smoke.stage1_epochs)
 
@@ -327,7 +326,6 @@ def train_stage1_gnn(
     )
 
     sym_w = training_cfg.get("symmetric_weight", 0.0) if config.get("use_symmetric_loss", True) else 0.0
-    max_epochs = training_cfg.get("epochs", 30)
     start_epoch = 1
     history = []
     best_val_ap = -1.0
