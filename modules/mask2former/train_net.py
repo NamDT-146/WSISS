@@ -57,6 +57,7 @@ from detectron2.evaluation import (
 )
 from detectron2.projects.deeplab import add_deeplab_config, build_lr_scheduler
 from detectron2.solver.build import maybe_add_gradient_clipping
+from detectron2.utils.events import EventStorage
 from detectron2.utils.logger import setup_logger
 
 # MaskFormer
@@ -366,6 +367,55 @@ class Trainer(DefaultTrainer):
             smoothing_hint=False,
         )
 
+    def _wssis_training_enabled(self) -> bool:
+        wssis = getattr(self.cfg, "WSSIS", None)
+        return wssis is not None and bool(getattr(wssis, "EXPERIMENT_ID", ""))
+
+    def train(self):
+        """
+        Run training.
+
+        WSSIS experiments use a dynamic loop so early stopping can terminate
+        training before SOLVER.MAX_ITER (Detectron2's default for-loop bound is fixed).
+        """
+        if not self._wssis_training_enabled():
+            super().train()
+            return self._finalize_train_results()
+
+        logger = logging.getLogger(__name__)
+        logger.info(
+            "Starting WSSIS training from iteration %s (max_iter=%s)",
+            self.start_iter,
+            self.max_iter,
+        )
+
+        self._wssis_stop_training = False
+        self.iter = self.start_iter
+        with EventStorage(self.start_iter) as self.storage:
+            try:
+                self.before_train()
+                while self.iter < self.max_iter and not self._wssis_stop_training:
+                    self.before_step()
+                    self.run_step()
+                    self.after_step()
+                self.iter += 1
+            except Exception:
+                logger.exception("Exception during training:")
+                raise
+            finally:
+                self.after_train()
+
+        return self._finalize_train_results()
+
+    def _finalize_train_results(self):
+        if len(self.cfg.TEST.EXPECTED_RESULTS) and comm.is_main_process():
+            assert hasattr(
+                self, "_last_eval_results"
+            ), "No evaluation results obtained during training!"
+            verify_results(self.cfg, self._last_eval_results)
+            return self._last_eval_results
+        return None
+
     def build_hooks(self):
         hooks_list = super().build_hooks()
         cfg = self.cfg
@@ -412,6 +462,16 @@ class Trainer(DefaultTrainer):
                 monitor_suffix=monitor_suffix,
             )
 
+        best_ckpt_hook: Optional[WssisBestCheckpointer] = None
+        if comm.is_main_process():
+            best_ckpt_hook = WssisBestCheckpointer(
+                eval_period,
+                self.checkpointer,
+                monitor_suffix=monitor_suffix,
+                mode="max",
+                file_prefix="model_best",
+            )
+
         def _wssis_eval_bundle():
             if use_full_val_final:
                 return WssisEvalHook(
@@ -419,27 +479,19 @@ class Trainer(DefaultTrainer):
                     test_subset,
                     test_full,
                     early_stopping_hook=early_stop_hook,
+                    best_checkpointer_hook=best_ckpt_hook,
                 )
             return WssisEvalHook(
                 eval_period,
                 test_subset,
                 test_subset,
                 early_stopping_hook=early_stop_hook,
+                best_checkpointer_hook=best_ckpt_hook,
             )
 
         def _append_wssis_train_hooks(out: List[Any]) -> None:
             if early_stop_hook is not None:
                 out.append(early_stop_hook)
-            if comm.is_main_process():
-                out.append(
-                    WssisBestCheckpointer(
-                        eval_period,
-                        self.checkpointer,
-                        monitor_suffix=monitor_suffix,
-                        mode="max",
-                        file_prefix="model_best",
-                    )
-                )
 
         def _insert_before_writer(out: List[Any], bundle: List[Any]) -> None:
             for i, hook in enumerate(out):

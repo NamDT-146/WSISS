@@ -123,6 +123,17 @@ def cache_eval_metric_on_trainer(trainer, monitor_suffix: str = "segm/AP") -> No
         trainer._wssis_eval_metric = None
 
 
+def _monitor_suffix_from_hooks(
+    early_stopping_hook: Optional["WssisEarlyStoppingHook"],
+    best_checkpointer_hook: Optional["WssisBestCheckpointer"],
+) -> str:
+    if early_stopping_hook is not None:
+        return early_stopping_hook._monitor_suffix
+    if best_checkpointer_hook is not None:
+        return best_checkpointer_hook._monitor_suffix
+    return "segm/AP"
+
+
 class WssisEvalHook(EvalHook):
     """
     Per-epoch eval on val_sample_20pct; final eval (after_train) on full val_all.
@@ -137,10 +148,12 @@ class WssisEvalHook(EvalHook):
         eval_function_full,
         eval_after_train: bool = True,
         early_stopping_hook: Optional["WssisEarlyStoppingHook"] = None,
+        best_checkpointer_hook: Optional["WssisBestCheckpointer"] = None,
     ):
         super().__init__(eval_period, eval_function_subset, eval_after_train=eval_after_train)
         self._func_full = eval_function_full
         self._early_stopping_hook = early_stopping_hook
+        self._best_checkpointer_hook = best_checkpointer_hook
 
     def _do_eval(self):
         results = self._func()
@@ -158,12 +171,13 @@ class WssisEvalHook(EvalHook):
                     ) from e
             self.trainer.storage.put_scalars(**scalars, smoothing_hint=False)
         comm.synchronize()
-        cache_eval_metric_on_trainer(
-            self.trainer,
-            self._early_stopping_hook._monitor_suffix
-            if self._early_stopping_hook is not None
-            else "segm/AP",
+        monitor_suffix = _monitor_suffix_from_hooks(
+            self._early_stopping_hook,
+            self._best_checkpointer_hook,
         )
+        cache_eval_metric_on_trainer(self.trainer, monitor_suffix)
+        if self._best_checkpointer_hook is not None:
+            self._best_checkpointer_hook.on_eval_complete(self.trainer)
         if self._early_stopping_hook is not None:
             self._early_stopping_hook.on_eval_complete(self.trainer)
 
@@ -273,7 +287,8 @@ class WssisEarlyStoppingHook(HookBase):
                 self._monitor_suffix,
                 self._es.best,
             )
-            trainer.max_iter = next_iter
+            trainer.max_iter = min(trainer.max_iter, next_iter)
+            trainer._wssis_stop_training = True
 
 
 class WssisBestCheckpointer(HookBase):
@@ -301,17 +316,29 @@ class WssisBestCheckpointer(HookBase):
         self._compare = operator.gt if mode == "max" else operator.lt
         self.best_metric: Optional[float] = None
         self.best_iter: Optional[int] = None
+        self._last_checked_iter = -1
 
-    def _best_checking(self) -> None:
+    def on_eval_complete(self, trainer) -> None:
+        """Called by WssisEvalHook immediately after subset eval (main process only)."""
+        if not comm.is_main_process():
+            return
+
+        next_iter = trainer.iter + 1
+        if next_iter == self._last_checked_iter:
+            return
+        self._last_checked_iter = next_iter
+        self._update_best(trainer)
+
+    def _update_best(self, trainer) -> None:
         metric_key, latest_metric = resolve_metric_from_trainer(
-            self.trainer, self._monitor_suffix
+            trainer, self._monitor_suffix
         )
         if latest_metric is None:
             sample_keys = []
-            if getattr(self.trainer, "storage", None) is not None:
+            if getattr(trainer, "storage", None) is not None:
                 sample_keys = [
                     k
-                    for k in self.trainer.storage.latest().keys()
+                    for k in trainer.storage.latest().keys()
                     if "AP" in k or "segm" in k
                 ][:16]
             self._logger.warning(
@@ -322,7 +349,7 @@ class WssisBestCheckpointer(HookBase):
             )
             return
 
-        metric_iter = self.trainer.iter + 1
+        metric_iter = trainer.iter + 1
         if math.isnan(latest_metric) or math.isinf(latest_metric):
             return
 
@@ -364,14 +391,11 @@ class WssisBestCheckpointer(HookBase):
             )
 
     def after_step(self):
+        """Fallback when paired with a plain Detectron2 EvalHook."""
         next_iter = self.trainer.iter + 1
         if (
             self._period > 0
             and next_iter % self._period == 0
             and next_iter != self.trainer.max_iter
         ):
-            self._best_checking()
-
-    def after_train(self):
-        if self.trainer.iter + 1 >= self.trainer.max_iter:
-            self._best_checking()
+            self.on_eval_complete(self.trainer)
