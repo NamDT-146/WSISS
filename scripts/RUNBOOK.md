@@ -137,7 +137,7 @@ Or step-by-step:
 | TensorBoard                                                               | `logs/tensorboard/`                              |
 | WandB                                                                     | Set `WANDB_PROJECT=wssis`                        |
 | `last.pt` / `best.pt` / `epoch_XXX.pt`                                    | `checkpoints/`                                   |
-| Early stopping (patience=10 on val_refined_ap)                            | enabled by default; `--no-early-stop` to disable |
+| Early stopping (patience=3 on val_refined_ap)                             | enabled by default; `--no-early-stop` to disable |
 | Resume training                                                           | `--resume` loads `checkpoints/last.pt`           |
 
 
@@ -179,7 +179,7 @@ Each batch runs **SAM mask decoder** (per instance) + **GNN**. Without P0.2 cach
 | Phase | Train data | In-loop / routine eval | Final eval |
 |-------|------------|------------------------|------------|
 | **P0.4 Stage-1 GNN** | `labeled_5pct_train.txt` (~80% of 5% pool) | `labeled_5pct_val.txt` (~20% holdout, still 5% pool) | **`val_all.txt` full** (auto after P0.4; `--no-final-eval` to skip) |
-| **Stage-2 / experiments** | per exp (`train_all`, etc.) | **`val_sample_20pct.txt`** (~20% of val); early stop **patience=10** on `segm/AP` | **full `val_all`** auto at end of training (Mask2Former); batch eval via `run_all_experiment_eval.sh --full-val` |
+| **Stage-2 / experiments** | per exp (`train_all`, etc.) | **`val_sample_20pct.txt`** (~20% of val); early stop **patience=3** on `segm/AP` | **full `val_all`** auto at end of training (Mask2Former); batch eval via `run_all_experiment_eval.sh --full-val` |
 
 Regenerate splits after changing fractions: `python -m modules.wssis.prep.generate_splits --force`
 

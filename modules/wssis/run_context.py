@@ -266,7 +266,7 @@ class RunContext:
 class EarlyStopping:
     def __init__(
         self,
-        patience: int = 10,
+        patience: int = 3,
         monitor: str = "val_iou",
         mode: str = "max",
         min_delta: float = 1e-4,

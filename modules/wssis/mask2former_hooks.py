@@ -84,7 +84,7 @@ class WssisEarlyStoppingHook(HookBase):
     def __init__(
         self,
         eval_period: int,
-        patience: int = 10,
+        patience: int = 3,
         monitor_suffix: str = "segm/AP",
         mode: str = "max",
         min_delta: float = 1e-4,
