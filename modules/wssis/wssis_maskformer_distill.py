@@ -124,7 +124,11 @@ def attach_wssis_distillation(model: nn.Module, cfg) -> nn.Module:
     feat_dim = int(getattr(wssis, "DISTILL_FEAT_DIM", 0)) or _backbone_feat_dim(model, feat_name)
     distill_weight = float(getattr(wssis, "DISTILL_WEIGHT", 1.0))
 
-    projector = FeatureProjector(m2f_dim=feat_dim, sam_dim=256)
+    device = getattr(model, "device", None)
+    if device is None:
+        device = next(model.parameters()).device
+
+    projector = FeatureProjector(m2f_dim=feat_dim, sam_dim=256).to(device)
     model.add_module("wssis_projector", projector)
     model.wssis_distill_weight = distill_weight
     model.wssis_distill_feat = feat_name

@@ -191,7 +191,10 @@ class Trainer(DefaultTrainer):
                 from modules.wssis.mask2former_teacher import WssisTeacherStack
                 from modules.wssis.paths import gnn_checkpoint
 
-                device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                if torch.cuda.is_available():
+                    device = torch.device("cuda", comm.get_local_rank())
+                else:
+                    device = torch.device("cpu")
                 gnn_path = getattr(cfg.WSSIS, "GNN_CHECKPOINT", "") or None
                 teacher = WssisTeacherStack(
                     device,
