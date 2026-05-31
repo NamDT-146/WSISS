@@ -32,7 +32,7 @@ import os
 from pathlib import Path
 
 from collections import OrderedDict
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 
 import torch
 
@@ -377,14 +377,16 @@ class Trainer(DefaultTrainer):
         from detectron2.engine import hooks as d2_hooks
 
         from modules.wssis.mask2former_datasets import wssis_val_full_name
-        from modules.wssis.mask2former_hooks import WssisEarlyStoppingHook, WssisEvalHook
+        from modules.wssis.mask2former_hooks import (
+            WssisBestCheckpointer,
+            WssisEarlyStoppingHook,
+            WssisEvalHook,
+        )
 
         eval_period = cfg.TEST.EVAL_PERIOD
         patience = int(getattr(cfg.WSSIS, "EARLY_STOPPING_PATIENCE", 0))
         monitor_suffix = getattr(cfg.WSSIS, "EARLY_STOPPING_MONITOR", "segm/AP")
         use_full_val_final = getattr(cfg.WSSIS, "USE_FULL_VAL_FINAL", False)
-        val_name = cfg.DATASETS.TEST[0] if cfg.DATASETS.TEST else ""
-        storage_metric = f"{val_name}/{monitor_suffix}" if val_name else monitor_suffix
 
         def test_subset():
             self._last_eval_results = self.test(self.cfg, self.model)
@@ -402,46 +404,64 @@ class Trainer(DefaultTrainer):
             )
             return results
 
-        def _append_wssis_train_hooks(out: List[Any]) -> None:
-            if patience <= 0:
-                return
-            out.append(
-                WssisEarlyStoppingHook(
-                    eval_period,
-                    patience=patience,
-                    monitor_suffix=monitor_suffix,
-                )
+        early_stop_hook: Optional[WssisEarlyStoppingHook] = None
+        if patience > 0:
+            early_stop_hook = WssisEarlyStoppingHook(
+                eval_period,
+                patience=patience,
+                monitor_suffix=monitor_suffix,
             )
-            if storage_metric:
+
+        def _wssis_eval_bundle():
+            if use_full_val_final:
+                return WssisEvalHook(
+                    eval_period,
+                    test_subset,
+                    test_full,
+                    early_stopping_hook=early_stop_hook,
+                )
+            return WssisEvalHook(
+                eval_period,
+                test_subset,
+                test_subset,
+                early_stopping_hook=early_stop_hook,
+            )
+
+        def _append_wssis_train_hooks(out: List[Any]) -> None:
+            if early_stop_hook is not None:
+                out.append(early_stop_hook)
+            if comm.is_main_process():
                 out.append(
-                    d2_hooks.BestCheckpointer(
+                    WssisBestCheckpointer(
                         eval_period,
                         self.checkpointer,
-                        storage_metric,
+                        monitor_suffix=monitor_suffix,
                         mode="max",
                         file_prefix="model_best",
                     )
                 )
 
+        def _insert_before_writer(out: List[Any], bundle: List[Any]) -> None:
+            for i, hook in enumerate(out):
+                if isinstance(hook, d2_hooks.PeriodicWriter):
+                    out[i:i] = bundle
+                    return
+            out.extend(bundle)
+
         patched: List[Any] = []
         replaced = False
         for hook in hooks_list:
             if isinstance(hook, d2_hooks.EvalHook):
-                if use_full_val_final:
-                    patched.append(WssisEvalHook(eval_period, test_subset, test_full))
-                else:
-                    patched.append(d2_hooks.EvalHook(eval_period, test_subset))
+                patched.append(_wssis_eval_bundle())
                 _append_wssis_train_hooks(patched)
                 replaced = True
             else:
                 patched.append(hook)
 
         if not replaced:
-            if use_full_val_final:
-                patched.append(WssisEvalHook(eval_period, test_subset, test_full))
-            else:
-                patched.append(d2_hooks.EvalHook(eval_period, test_subset))
-            _append_wssis_train_hooks(patched)
+            bundle: List[Any] = [_wssis_eval_bundle()]
+            _append_wssis_train_hooks(bundle)
+            _insert_before_writer(patched, bundle)
 
         return patched
 
