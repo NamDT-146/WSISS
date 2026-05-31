@@ -7,9 +7,8 @@ from typing import Any, Dict, List, Optional
 import torch
 import torch.nn as nn
 
-from modules.wssis.mask2former_losses import FeatureProjector, feature_distillation_loss
+from modules.wssis.mask2former_losses import LightweightFeatureAligner, feature_distillation_loss
 from modules.wssis.sam_cache import fetch_sam_embeddings_batch, load_sam_embedding_cache
-from modules.wssis.stage2_constants import SAM_EMBED_SPATIAL
 
 
 def _backbone_feat_dim(model: nn.Module, feat_name: str) -> int:
@@ -20,6 +19,19 @@ def _backbone_feat_dim(model: nn.Module, feat_name: str) -> int:
     if isinstance(channels, dict) and feat_name in channels:
         return int(channels[feat_name])
     return 384
+
+
+def _zero_module_loss(module: nn.Module) -> torch.Tensor:
+    """Autograd-linked zero loss so DDP always sees module params as used."""
+    loss: Optional[torch.Tensor] = None
+    for param in module.parameters():
+        if not param.requires_grad:
+            continue
+        term = param.reshape(-1)[0] * 0.0
+        loss = term if loss is None else loss + term
+    if loss is None:
+        raise RuntimeError("Expected at least one trainable parameter in module")
+    return loss
 
 
 def _load_sam_embed_for_rec(
@@ -66,7 +78,7 @@ def _load_sam_embed_for_rec(
 def _compute_distill_loss(
     batched_inputs: List[dict],
     backbone_features: Optional[Dict[str, torch.Tensor]],
-    projector: FeatureProjector,
+    aligner: LightweightFeatureAligner,
     feat_name: str,
     model: nn.Module,
 ) -> Optional[torch.Tensor]:
@@ -100,14 +112,11 @@ def _compute_distill_loss(
         res4_weak = res4_weak[valid_rows]
 
     sam_stack = torch.stack(sam_embeds, dim=0)
-    if sam_stack.shape[-2:] != (SAM_EMBED_SPATIAL, SAM_EMBED_SPATIAL):
-        sam_stack = torch.nn.functional.interpolate(
-            sam_stack,
-            size=(SAM_EMBED_SPATIAL, SAM_EMBED_SPATIAL),
-            mode="bilinear",
-            align_corners=False,
-        )
-    aligned = projector(res4_weak)
+    target_hw = res4_weak.shape[-2:]
+    if sam_stack.shape[-2:] != target_hw:
+        sam_stack = torch.nn.functional.adaptive_avg_pool2d(sam_stack, output_size=target_hw)
+
+    aligned = aligner(res4_weak)
     return feature_distillation_loss(aligned, sam_stack)
 
 
@@ -128,8 +137,8 @@ def attach_wssis_distillation(model: nn.Module, cfg) -> nn.Module:
     if device is None:
         device = next(model.parameters()).device
 
-    projector = FeatureProjector(m2f_dim=feat_dim, sam_dim=256).to(device)
-    model.add_module("wssis_projector", projector)
+    aligner = LightweightFeatureAligner(m2f_dim=feat_dim, sam_dim=256).to(device)
+    model.add_module("wssis_aligner", aligner)
     model.wssis_distill_weight = distill_weight
     model.wssis_distill_feat = feat_name
 
@@ -154,12 +163,13 @@ def attach_wssis_distillation(model: nn.Module, cfg) -> nn.Module:
         distill = _compute_distill_loss(
             batched_inputs,
             captured.get("features"),
-            projector,
+            aligner,
             feat_name,
             model,
         )
-        if distill is not None:
-            losses["loss_distill"] = distill * distill_weight
+        if distill is None:
+            distill = _zero_module_loss(aligner)
+        losses["loss_distill"] = distill * distill_weight
         return losses
 
     model.forward = forward_with_distill  # type: ignore[method-assign]

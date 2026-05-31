@@ -251,16 +251,17 @@ class Trainer(DefaultTrainer):
         params: List[Dict[str, Any]] = []
         memo: Set[torch.nn.parameter.Parameter] = set()
 
-        # Feature projector (semi-weak distillation)
-        if hasattr(model, "wssis_projector"):
+        # Lightweight feature aligner (semi-weak distillation)
+        aligner = getattr(model, "wssis_aligner", None) or getattr(model, "wssis_projector", None)
+        if aligner is not None:
             params.append(
                 {
-                    "params": list(model.wssis_projector.parameters()),
+                    "params": list(aligner.parameters()),
                     "lr": cfg.SOLVER.BASE_LR,
                     "weight_decay": cfg.SOLVER.WEIGHT_DECAY,
                 }
             )
-            memo.update(p for p in model.wssis_projector.parameters())
+            memo.update(p for p in aligner.parameters())
 
         for module_name, module in model.named_modules():
             for module_param_name, value in module.named_parameters(recurse=False):
