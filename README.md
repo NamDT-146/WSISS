@@ -26,8 +26,11 @@ export WSSIS_REPO_ROOT=$PWD PYTHONPATH=$PWD WSSIS_RUN_ID=wssis_main
 
 bash scripts/setup/01_download_data.sh
 bash scripts/prep/run_p0.sh --run-id $WSSIS_RUN_ID
-bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID
-python scripts/experiments/run_exp_1c.py --run-id $WSSIS_RUN_ID
+bash scripts/experiments/run_smoke_test.sh   # optional sanity check first
+bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID --stage1-holdout
+python -m modules.wssis.run_experiment --exp 1A --stage train --run-id $WSSIS_RUN_ID
+python -m modules.wssis.run_experiment --exp 1C --stage train --run-id $WSSIS_RUN_ID
+python -m modules.wssis.run_experiment --exp 4A --stage train --run-id $WSSIS_RUN_ID
 ```
 
 Track progress: **[scripts/CHECKLIST.md](scripts/CHECKLIST.md)**
@@ -42,14 +45,15 @@ Track progress: **[scripts/CHECKLIST.md](scripts/CHECKLIST.md)**
 - **Gap:** Raw SAM boundaries are noisy; weak labels alone are insufficient for a strong student.
 - **Our method (SWSIS):** GNN refines SAM masks → pseudo-GT for 95% data; feature distillation aligns Mask2Former (Swin-T) with SAM embeddings; 5% GT anchors quality.
 
-**Bounds to report (Experiments 1A–1D):**
+**Bounds to report (5 items — see [report/PLAN.md](report/PLAN.md) §0.1):**
 
-| Exp | Setting | Expected role in report |
-|-----|---------|-------------------------|
-| 1A | 5% GT only | Lower bound |
-| 1B | 95% raw SAM pseudo | Weak baseline |
-| **1C** | **Full SWSIS** | **Main result** |
-| 1D | 100% GT | Upper bound |
+| Report # | Exp | Setting | Expected role |
+|----------|-----|---------|---------------|
+| 1 | **1A** | 5% GT only | Lower bound |
+| 2 | **P0.4** | Raw SAM vs GNN on 5% | Teacher quality |
+| 3 | **1C** | True semi-weak SWSIS | **Main result** |
+| 4 | **4A** | YOLO semi-weak | Generalization |
+| 5 | **1D** | 100% GT | Upper bound (reuse existing run) |
 
 Plot **annotation cost vs AP** for the presentation (see EXPERIMENT.md Phase 4).
 

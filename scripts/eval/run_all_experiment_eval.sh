@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Batch student eval for all Stage-2 experiments (no teacher AP — see run_teacher_eval.sh).
+# Batch student eval for active Stage-2 experiments (1A, 1C, 4A).
 #
 # Usage:
 #   bash scripts/eval/run_all_experiment_eval.sh --run-id wssis_main

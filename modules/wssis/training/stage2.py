@@ -27,6 +27,7 @@ from modules.wssis.paths import (
 )
 from modules.wssis.run_context import RunContext
 from modules.wssis.proc_utils import run_subprocess
+from modules.wssis.smoke_profile import apply_smoke_env, get_smoke_profile, is_smoke_mode
 
 # Base Mask2Former config uses IMS_PER_BATCH=16 / BASE_LR=0.0001; doubled for WSSIS Stage-2.
 STAGE2_IMS_PER_BATCH = 32
@@ -72,6 +73,8 @@ def _write_experiment_config(spec: ExperimentSpec, out_dir: Path, ctx: Optional[
         "use_distillation": spec.use_distillation,
         "use_symmetric_loss": spec.use_symmetric_loss,
         "weak_signal": spec.weak_signal,
+        "use_semi_weak": spec.use_semi_weak,
+        "freeze_gnn": spec.freeze_gnn,
         "gnn_checkpoint": spec.gnn_checkpoint,
         "stage2_epochs": spec.stage2_epochs,
         "image_list": str(_split_file_for_spec(spec)),
@@ -133,6 +136,8 @@ def _check_swin_weights() -> Path:
 
 
 def _mask2former_train(spec: ExperimentSpec, out_dir: Path, dry_run: bool = False) -> None:
+    apply_smoke_env()
+    smoke = get_smoke_profile()
     m2f_root = repo_root() / "modules" / "mask2former"
     train_net = m2f_root / "train_net.py"
     if not train_net.exists():
@@ -143,6 +148,18 @@ def _mask2former_train(spec: ExperimentSpec, out_dir: Path, dry_run: bool = Fals
     max_iter = spec.stage2_epochs * STAGE2_ITERS_PER_EPOCH
     eval_period = STAGE2_ITERS_PER_EPOCH
     lr_steps = (int(max_iter * 0.7), int(max_iter * 0.9))
+    ims_batch = STAGE2_IMS_PER_BATCH
+    use_full_val = True
+    early_patience = STAGE2_EARLY_STOP_PATIENCE
+    image_size = 1024
+    if smoke:
+        max_iter = smoke.m2f_max_iter
+        eval_period = smoke.m2f_eval_period
+        lr_steps = (max(1, int(max_iter * 0.7)), max(2, int(max_iter * 0.9)))
+        ims_batch = max(2, smoke.batch_size)
+        use_full_val = smoke.m2f_use_full_val_final
+        early_patience = 0
+        image_size = smoke.m2f_image_size
 
     generated = out_dir / "mask2former_override.yaml"
     split_txt = _split_file_for_spec(spec)
@@ -150,6 +167,7 @@ def _mask2former_train(spec: ExperimentSpec, out_dir: Path, dry_run: bool = Fals
         f"wssis_train_{spec.id}",
         f"wssis_val_{spec.id}",
     )
+    gnn_ckpt = gnn_checkpoint(spec.gnn_checkpoint)
     generated.write_text(
         f"""# Auto-generated for experiment {spec.id}
 _BASE_: "{base_yaml.as_posix()}"
@@ -160,11 +178,18 @@ WSSIS:
   WEAK_SPLIT: "{spec.weak_split}"
   USE_GNN: {str(spec.use_gnn).lower()}
   USE_DISTILL: {str(spec.use_distillation).lower()}
+  DISTILL_WEIGHT: 1.0
+  DISTILL_BACKBONE_FEAT: "res4"
+  USE_SEMI_WEAK: {str(spec.use_semi_weak).lower()}
+  USE_RAW_SAM_ONLY: {str(spec.use_raw_sam_only).lower()}
+  FREEZE_GNN: {str(spec.freeze_gnn).lower()}
   WEAK_SIGNAL: "{spec.weak_signal}"
-  USE_FULL_VAL_FINAL: true
+  GNN_CHECKPOINT: "{gnn_ckpt.as_posix()}"
+  USE_FULL_VAL_FINAL: {str(use_full_val).lower()}
   ITERS_PER_EPOCH: {STAGE2_ITERS_PER_EPOCH}
-  EARLY_STOPPING_PATIENCE: {STAGE2_EARLY_STOP_PATIENCE}
+  EARLY_STOPPING_PATIENCE: {early_patience}
   EARLY_STOPPING_MONITOR: segm/AP
+  SMOKE: {str(is_smoke_mode()).lower()}
 DATASETS:
   TRAIN: ("{train_ds}",)
   TEST: ("{val_ds}",)
@@ -173,10 +198,12 @@ MODEL:
 OUTPUT_DIR: "{(out_dir / 'mask2former').as_posix()}"
 TEST:
   EVAL_PERIOD: {eval_period}
+INPUT:
+  IMAGE_SIZE: {image_size}
 SOLVER:
   MAX_ITER: {max_iter}
   STEPS: ({lr_steps[0]}, {lr_steps[1]})
-  IMS_PER_BATCH: {STAGE2_IMS_PER_BATCH}
+  IMS_PER_BATCH: {ims_batch}
   BASE_LR: {STAGE2_BASE_LR}
 """,
         encoding="utf-8",
@@ -226,27 +253,31 @@ def _yolo_train(spec: ExperimentSpec, out_dir: Path, dry_run: bool = False) -> N
     except ImportError as e:
         raise ImportError("Install ultralytics for Exp 4A: pip install ultralytics") from e
 
-    data_yaml = out_dir / "yolo_data.yaml"
+    from modules.wssis.yolo_export import prepare_yolo_semi_weak_dataset
+
+    apply_smoke_env()
+    smoke = get_smoke_profile()
     paths = build_coco_paths()
-    data_yaml.write_text(
-        f"""# YOLO dataset stub for {spec.id} — export COCO→YOLO labels before training
-path: {paths['coco_root'].as_posix()}
-train: {paths['labeled_5pct_txt'].as_posix()}
-val: {paths['val_all_txt'].as_posix()}
-# Weak 95% pseudo-label export required for semi-supervised YOLO run
-weak: {paths['weak_95pct_txt'].as_posix()}
-""",
-        encoding="utf-8",
+    export_dir = out_dir / "yolo_export"
+    data_yaml = prepare_yolo_semi_weak_dataset(
+        export_dir,
+        spec,
+        max_images=smoke.max_images if smoke else None,
     )
     print(f"[stage2] YOLO data config written: {data_yaml}")
     if dry_run:
         return
+    epochs = spec.stage2_epochs
+    batch = 32
+    if smoke:
+        epochs = smoke.yolo_epochs
+        batch = smoke.batch_size
     model = YOLO("yolov8n-seg.pt")
     model.train(
         data=str(data_yaml),
-        epochs=spec.stage2_epochs,
-        batch=32,
-        patience=STAGE2_EARLY_STOP_PATIENCE,
+        epochs=epochs,
+        batch=batch,
+        patience=STAGE2_EARLY_STOP_PATIENCE if not smoke else 0,
         project=str(out_dir),
         name="yolov8_seg",
         exist_ok=True,
@@ -297,7 +328,8 @@ def evaluate_experiment(
     full_val: bool = False,
     with_teacher_eval: bool = False,
 ) -> None:
-    out_dir = experiment_output_dir(spec.id)
+    ctx = run_ctx or RunContext(task=f"eval_{spec.id}", experiment_id=spec.id)
+    out_dir = ctx.exp_dir
     print(f"[eval] Experiment {spec.id} — outputs at {out_dir}")
 
     if dry_run:
@@ -306,8 +338,6 @@ def evaluate_experiment(
             msg += " + teacher val report (use scripts/eval/run_teacher_eval.sh instead)"
         print(msg)
         return
-
-    ctx = run_ctx or RunContext(task=f"eval_{spec.id}", experiment_id=spec.id)
 
     if with_teacher_eval:
         from modules.wssis.training.evaluate_teacher import evaluate_teacher_on_val
@@ -323,7 +353,47 @@ def evaluate_experiment(
             full_val=full_val,
         )
 
-    print(
-        "[eval] Student Mask2Former COCO AP — run train_net.py --eval-only on "
-        f"{out_dir / 'mask2former'} when Stage-2 checkpoints exist."
-    )
+    if spec.student != "mask2former":
+        print(f"[eval] YOLO eval uses training-time val for {spec.id}")
+        return
+
+    m2f_dir = out_dir / "mask2former"
+    override = out_dir / "mask2former_override.yaml"
+    if not override.exists():
+        print(f"[eval] Missing config {override}; skip student eval")
+        return
+
+    ckpt_candidates = [
+        m2f_dir / "model_best.pth",
+        m2f_dir / "model_final.pth",
+    ]
+    ckpt = next((p for p in ckpt_candidates if p.exists()), None)
+    if ckpt is None:
+        print(f"[eval] No student checkpoint in {m2f_dir}")
+        return
+
+    m2f_root = repo_root() / "modules" / "mask2former"
+    train_net = m2f_root / "train_net.py"
+    cmd = [
+        sys.executable,
+        str(train_net),
+        "--num-gpus",
+        os.environ.get("WSSIS_NUM_GPUS", "1"),
+        "--dist-url",
+        "auto",
+        "--eval-only",
+        "--config-file",
+        str(override),
+        "MODEL.WEIGHTS",
+        str(ckpt),
+        "OUTPUT_DIR",
+        str(m2f_dir),
+    ]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = f"{repo_root()}{os.pathsep}{m2f_root}{os.pathsep}{env.get('PYTHONPATH', '')}"
+    env["WSSIS_REPO_ROOT"] = str(repo_root())
+    print("[eval] Student Mask2Former:", " ".join(cmd))
+    rc = run_subprocess(cmd, cwd=str(m2f_root), env=env)
+    if rc != 0:
+        raise RuntimeError(f"Student eval failed for {spec.id} (exit {rc})")
+    ctx.log("Student eval complete for %s using %s", spec.id, ckpt.name)

@@ -57,7 +57,20 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Eval stage: also run teacher AP (default off; run once after P0 via run_teacher_eval.sh)",
     )
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Super-quick smoke profile (<10 min, 1 GPU, minimal data)",
+    )
     args = parser.parse_args(argv)
+
+    if args.smoke:
+        import os
+
+        os.environ["WSSIS_SMOKE"] = "1"
+        os.environ.setdefault("WSSIS_NUM_GPUS", "1")
+        if not args.run_id:
+            args.run_id = "smoke_quick"
 
     if args.list:
         for eid, spec in EXPERIMENTS.items():

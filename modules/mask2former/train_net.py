@@ -29,6 +29,7 @@ import copy
 import itertools
 import logging
 import os
+from pathlib import Path
 
 from collections import OrderedDict
 from typing import Any, Dict, List, Set
@@ -181,7 +182,28 @@ class Trainer(DefaultTrainer):
             return build_detection_train_loader(cfg, mapper=mapper)
         # coco instance segmentation lsj new baseline
         elif cfg.INPUT.DATASET_MAPPER_NAME == "coco_instance_lsj":
-            mapper = COCOInstanceNewBaselineDatasetMapper(cfg, True)
+            use_semi = getattr(cfg.WSSIS, "USE_SEMI_WEAK", False) if getattr(cfg, "WSSIS", None) else False
+            if use_semi:
+                import torch
+
+                from modules.wssis.mask2former_mapper import WssisSemiWeakMapper
+                from modules.wssis.mask2former_teacher import WssisTeacherStack
+                from modules.wssis.paths import gnn_checkpoint
+
+                device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+                gnn_path = getattr(cfg.WSSIS, "GNN_CHECKPOINT", "") or None
+                teacher = WssisTeacherStack(
+                    device,
+                    gnn_ckpt_path=Path(gnn_path) if gnn_path else gnn_checkpoint(),
+                    use_gnn=getattr(cfg.WSSIS, "USE_GNN", True),
+                    freeze_gnn=getattr(cfg.WSSIS, "FREEZE_GNN", False),
+                )
+                cfg.defrost()
+                cfg.DATALOADER.NUM_WORKERS = 0
+                cfg.freeze()
+                mapper = WssisSemiWeakMapper(cfg, True, teacher=teacher)
+            else:
+                mapper = COCOInstanceNewBaselineDatasetMapper(cfg, True)
             return build_detection_train_loader(cfg, mapper=mapper)
         # coco panoptic segmentation lsj new baseline
         elif cfg.INPUT.DATASET_MAPPER_NAME == "coco_panoptic_lsj":
@@ -224,6 +246,18 @@ class Trainer(DefaultTrainer):
 
         params: List[Dict[str, Any]] = []
         memo: Set[torch.nn.parameter.Parameter] = set()
+
+        # Feature projector (semi-weak distillation)
+        if hasattr(model, "wssis_projector"):
+            params.append(
+                {
+                    "params": list(model.wssis_projector.parameters()),
+                    "lr": cfg.SOLVER.BASE_LR,
+                    "weight_decay": cfg.SOLVER.WEIGHT_DECAY,
+                }
+            )
+            memo.update(p for p in model.wssis_projector.parameters())
+
         for module_name, module in model.named_modules():
             for module_param_name, value in module.named_parameters(recurse=False):
                 if not value.requires_grad:
@@ -279,6 +313,52 @@ class Trainer(DefaultTrainer):
         if not cfg.SOLVER.CLIP_GRADIENTS.CLIP_TYPE == "full_model":
             optimizer = maybe_add_gradient_clipping(cfg, optimizer)
         return optimizer
+
+    @classmethod
+    def build_model(cls, cfg):
+        from detectron2.modeling import build_model as d2_build_model
+
+        model = d2_build_model(cfg)
+        if getattr(cfg, "WSSIS", None) and getattr(cfg.WSSIS, "USE_DISTILL", False):
+            from modules.wssis.wssis_maskformer_distill import attach_wssis_distillation
+
+            model = attach_wssis_distillation(model, cfg)
+        return model
+
+    def run_step(self):
+        """Log WSSIS component losses when semi-weak training is enabled."""
+        super().run_step()
+        if not getattr(self.cfg, "WSSIS", None):
+            return
+        if not getattr(self.cfg.WSSIS, "USE_SEMI_WEAK", False):
+            return
+        storage = self.storage
+        if storage is None:
+            return
+        loss_ce = storage.history("loss_ce").latest() if storage.history("loss_ce") else None
+        loss_mask = storage.history("loss_mask").latest() if storage.history("loss_mask") else None
+        loss_dice = storage.history("loss_dice").latest() if storage.history("loss_dice") else None
+        sup = 0.0
+        for v in (loss_ce, loss_mask, loss_dice):
+            if v is not None:
+                sup += float(v)
+        storage.put_scalar("wssis/sup_loss", sup, smoothing_hint=False)
+        ratio = float(getattr(self.cfg.WSSIS, "LABELED_BATCH_RATIO", 0.5))
+        storage.put_scalar(
+            "wssis/semi_loss",
+            sup * max(0.0, 1.0 - ratio) if sup else 0.0,
+            smoothing_hint=False,
+        )
+        loss_distill = (
+            storage.history("loss_distill").latest()
+            if storage.history("loss_distill")
+            else None
+        )
+        storage.put_scalar(
+            "wssis/distill_loss",
+            float(loss_distill) if loss_distill is not None else 0.0,
+            smoothing_hint=False,
+        )
 
     def build_hooks(self):
         hooks_list = super().build_hooks()
@@ -390,6 +470,12 @@ def setup(args):
     cfg.merge_from_list(args.opts)
     if ensure_wssis_datasets_in_cfg is not None:
         ensure_wssis_datasets_in_cfg(cfg)
+    try:
+        from modules.wssis.mask2former_config import apply_smoke_to_cfg
+
+        apply_smoke_to_cfg(cfg)
+    except ImportError:
+        pass
     cfg.freeze()
     default_setup(cfg, args)
     # Setup logger for "mask_former" module

@@ -159,9 +159,9 @@ def train_stage1_gnn(
     if str(repo) not in sys.path:
         sys.path.insert(0, str(repo))
 
-    from modules.vig_refinenet.coco_sam_stage1_dataset import (
-        CocoSamStage1Dataset,
-        collate_stage1,
+    from modules.wssis.datasets.coco_image_dataset import (
+        CocoImageDataset,
+        collate_image_to_instances,
     )
     from modules.vig_refinenet.sam_stage1_common import (
         CombinedSegLoss,
@@ -210,19 +210,29 @@ def train_stage1_gnn(
         "val_image_split": val_spec["image_split"],
     }
 
+    from modules.wssis.smoke_profile import get_smoke_profile
+
+    smoke = get_smoke_profile()
+    max_images = data_cfg.get("max_images")
+    max_objects = data_cfg.get("max_objects_per_image")
+    if smoke:
+        max_images = smoke.max_images
+        max_objects = smoke.max_objects_per_image
+
     common = dict(
         coco_root=paths["coco_root"],
         img_size=data_cfg.get("img_size", 1024),
         mask_size=mask_size,
-        max_instances=data_cfg.get("max_instances"),
+        max_images=max_images,
+        max_objects_per_image=max_objects,
     )
-    train_ds = CocoSamStage1Dataset(
+    train_ds = CocoImageDataset(
         ann_json=paths["train_ann"],
         image_id_txt=paths["train_txt"],
         split="train",
         **common,
     )
-    val_ds = CocoSamStage1Dataset(
+    val_ds = CocoImageDataset(
         ann_json=paths["val_ann"],
         image_id_txt=paths["val_txt"],
         split=paths["val_image_split"],
@@ -238,16 +248,22 @@ def train_stage1_gnn(
     config.setdefault("data", {})["train_split"] = data_cfg.get("train_split", "labeled_5pct_train")
     config["data"]["val_split"] = data_cfg.get("val_split", "labeled_5pct_val")
     config["data"]["val_eval_scope"] = val_spec["scope"]
-    config["data"]["n_train_instances"] = len(train_ds)
-    config["data"]["n_val_instances"] = len(val_ds)
+    config["data"]["n_train_images"] = len(train_ds)
+    config["data"]["n_val_images"] = len(val_ds)
+    n_train_obj = sum(len(s[1]) for s in train_ds.samples)
+    n_val_obj = sum(len(s[1]) for s in val_ds.samples)
+    config["data"]["n_train_objects"] = n_train_obj
+    config["data"]["n_val_objects"] = n_val_obj
     ctx.log(
-        "Stage-1 train: %d instances from %s (5%% labeled pool, train fold)",
+        "Stage-1 train: %d images (%d objects) from %s",
         len(train_ds),
+        n_train_obj,
         paths["train_txt"],
     )
     ctx.log(
-        "Stage-1 val (early stop): %d instances from %s (%s; still train2017 images)",
+        "Stage-1 val (early stop): %d images (%d objects) from %s (%s)",
         len(val_ds),
+        n_val_obj,
         paths["val_txt"],
         val_spec["scope"],
     )
@@ -262,7 +278,16 @@ def train_stage1_gnn(
     ctx.save_config(config)
 
     batch_size = training_cfg.get("batch_size", 4)
+    if smoke:
+        batch_size = smoke.batch_size
     num_workers = data_cfg.get("num_workers", 4)
+    if smoke:
+        num_workers = min(num_workers, 0)
+    stage1_max_steps = training_cfg.get("max_steps")
+    if smoke:
+        stage1_max_steps = smoke.stage1_max_steps
+        max_epochs = min(max_epochs, smoke.stage1_epochs)
+
     train_loader = DataLoader(
         train_ds,
         batch_size=batch_size,
@@ -270,7 +295,7 @@ def train_stage1_gnn(
         num_workers=num_workers,
         pin_memory=True,
         drop_last=True,
-        collate_fn=collate_stage1,
+        collate_fn=collate_image_to_instances,
     )
     val_loader = DataLoader(
         val_ds,
@@ -278,7 +303,7 @@ def train_stage1_gnn(
         shuffle=False,
         num_workers=num_workers,
         pin_memory=True,
-        collate_fn=collate_stage1,
+        collate_fn=collate_image_to_instances,
     )
 
     dev = resolve_device(prefer_cuda=device.startswith("cuda"))
@@ -320,6 +345,10 @@ def train_stage1_gnn(
     if resume:
         ckpt = ctx.load_checkpoint()
         if ckpt:
+            if ckpt.get("wssis_ckpt_version", 1) < 2:
+                raise RuntimeError(
+                    "Checkpoint is pre-image-level (per-instance). Re-run P0.4 after True SWSIS pull."
+                )
             refiner.load_state_dict(ckpt["state_dict"], strict=False)
             if "optimizer" in ckpt:
                 optimizer.load_state_dict(ckpt["optimizer"])
@@ -333,6 +362,8 @@ def train_stage1_gnn(
     viz_cfg = config.get("visualization", {})
     viz_enabled = viz_cfg.get("enabled", True)
     viz_samples = viz_cfg.get("num_samples", 4)
+    if smoke:
+        viz_samples = smoke.viz_samples
     if viz_enabled:
         from modules.wssis.training.visualize import visualize_stage1_epoch
 
@@ -400,6 +431,8 @@ def train_stage1_gnn(
                 seg=f"{comps['seg_weighted']:.4f}",
                 sym=f"{comps['sym_weighted']:.4f}",
             )
+            if stage1_max_steps and n_batches >= stage1_max_steps:
+                break
 
         train_mean = _mean_losses(train_totals, n_batches)
         if n_batches and use_sam_cache:
@@ -518,6 +551,8 @@ def train_stage1_gnn(
             "best_val_refined_ap": best_val_ap,
             "early_stop_best": early_stop.best,
             "early_stop_counter": early_stop.counter,
+            "wssis_ckpt_version": 2,
+            "sample_unit": "image",
         }
         ctx.save_checkpoint(payload, "last.pt", copy_to_legacy=legacy_ckpt if epoch == max_epochs else None)
         if is_best:

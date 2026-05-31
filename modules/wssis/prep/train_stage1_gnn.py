@@ -118,6 +118,19 @@ def run(
             else:
                 cfg[key] = val
 
+    from modules.wssis.smoke_profile import get_smoke_profile
+
+    smoke = get_smoke_profile()
+    if smoke:
+        cfg["data"]["max_images"] = smoke.max_images
+        cfg["data"]["max_objects_per_image"] = smoke.max_objects_per_image
+        cfg["training"]["batch_size"] = smoke.batch_size
+        cfg["training"]["max_steps"] = smoke.stage1_max_steps
+        cfg["training"]["epochs"] = min(cfg["training"]["epochs"], smoke.stage1_epochs)
+        cfg["data"]["num_workers"] = 0
+        cfg["visualization"]["num_samples"] = smoke.viz_samples
+        cfg["early_stopping"]["patience"] = 0
+
     ctx = RunContext(run_id=cfg.get("run_id"), run_dir=cfg.get("run_dir"), task="stage1_gnn")
     cfg["run_id"] = ctx.run_id
     cfg["run_dir"] = str(ctx.root)

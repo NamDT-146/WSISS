@@ -80,29 +80,24 @@ Run after P0.4. **No extra manual labeling step** — uses fixed val prompts + o
 
 ## D. Stage-2 experiments (student — mask AP on val)
 
-| Done | ID | Script | Config highlight | Student AP |
-|------|-----|--------|------------------|------------|
-| ☐ | **1C** | `run_exp_1c.py` | Full SWSIS (main) | |
-| ☐ | 1A | `run_exp_1a.py` | 5% GT lower bound | |
-| ☐ | 1B | `run_exp_1b.py` | Raw SAM pseudo | |
-| ☐ | 1D | `run_exp_1d.py` | 100% GT upper bound | |
-| ☐ | 2A | `run_exp_2a.py` | No GNN | |
-| ☐ | 2B | `run_exp_2b.py` | No distillation | |
-| ☐ | 2C | `run_exp_2c.py` | No symmetric loss GNN | |
-| ☐ | 3A | `run_exp_3a.py` | Boxes only | |
-| ☐ | 3B | `run_exp_3b.py` | Points only | |
-| ☐ | 3C | `run_exp_3c.py` | Mixed signals | |
-| ☐ | 4A | `run_exp_4a.py` | YOLOv8-seg | |
+| Done | ID | Command | Config highlight | Student AP |
+|------|-----|---------|------------------|------------|
+| ☐ | **1A** | `run_experiment --exp 1A --stage train` | 5% GT labeled-only | |
+| ☐ | **1C** | `run_experiment --exp 1C --stage train` | True semi-weak SWSIS (main) | |
+| ☐ | **4A** | `run_experiment --exp 4A --stage train` | YOLOv8-seg semi-weak | |
+| ☐ | **1D** | *(reuse existing run)* | 100% GT upper bound | |
 
-Run all (train only): `bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID`
-Parallel (auto GPU count): `bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID --parallel`
-Student eval batch: `bash scripts/eval/run_all_experiment_eval.sh --run-id $WSSIS_RUN_ID`
+Smoke test: `bash scripts/experiments/run_smoke_test.sh`
 
-**Student eval (Mask2Former):** COCO **AP, AP50, AP75, AP_S, AP_M, AP_L** on val — **student only, no teacher in loop**.
+Run all (train): `bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID`
+Parallel: `bash scripts/experiments/run_experiments_parallel.sh --run-id $WSSIS_RUN_ID`
+Student eval batch: `bash scripts/eval/run_all_experiment_eval.sh --run-id $WSSIS_RUN_ID --full-val`
+
+**Student eval (Mask2Former):** COCO **AP, AP50, AP75, AP_S, AP_M, AP_L** on val — wired via `evaluate_experiment()` → `--eval-only` on `model_best.pth`.
 
 | Done | Item | Status |
 |------|------|--------|
-| ☐ | Mask2Former `--eval-only` wired in WSSIS | ⚠️ Manual via Detectron2 for now |
+| ☐ | Mask2Former `--eval-only` wired in WSSIS | ✅ `stage2.evaluate_experiment` |
 | ☐ | Results logged per experiment | `outputs/runs/<id>/experiments/<EXP>/` |
 
 ---
@@ -143,10 +138,9 @@ Optional: `export WANDB_PROJECT=wssis`
 
 | Item | Status | Action |
 |------|--------|--------|
-| Stage-2 full SWSIS training loop in Mask2Former | ⚠️ Incremental | Teacher flags in YAML; full pseudo+distill loop pending |
-| Student COCO AP auto-export | ⚠️ Partial | Run Detectron2 eval on best student ckpt |
-| Old GNN checkpoints (pre–3-channel input) | ❌ Invalid | Re-run P0.4 after architecture update |
-| Regenerate splits after scribble `ann_id` fix | Optional | `generate_splits --force` |
+| Feature distillation loss in M2F trainer | ✅ | `loss_distill` on weak images via `res4` → projector → SAM cache |
+| Old GNN checkpoints (pre-image-level) | ❌ Invalid | Re-run P0.4 (`wssis_ckpt_version=2`) |
+| Old progress `exp_1C` from mislabeled full-sup run | ⚠️ | Rename/delete before new true 1C |
 
 ---
 

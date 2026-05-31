@@ -2,23 +2,35 @@
 
 All experiments share frozen preparation artifacts (§0.1). Only the columns marked *varies* change between runs. Full logging and figure requirements: [EXPERIMENT.md](EXPERIMENT.md).
 
-### 0.1 Experiment matrix
+### 0.1 Experiment matrix (5 report items)
+
+| Report # | ID | Category | Student | Labeled | Weak | GNN | Distill | Notes |
+|----------|-----|----------|---------|---------|------|-----|---------|-------|
+| **1** | **1A** | Baseline | M2F | 5% GT | — | — | — | Lower bound |
+| **2** | **P0.4** | Teacher | — | 5% holdout | — | train/eval | — | Raw SAM vs GNN AP |
+| **3** | **1C** | Main | M2F | 5% GT | 95% pseudo | **trainable** | yes | True semi-weak SWSIS |
+| **4** | **4A** | Generalize | YOLOv8-seg | 5% GT | 95% pseudo | **trainable** | yes | Same teacher as 1C |
+| **5** | **1D** | Upper bound | M2F | 100% GT | — | — | — | Reuse existing full-sup run |
+
+Archived ablations (1B, 2A–2C, 3A–3C): see [ARCHIVED_EXPERIMENTS.md](ARCHIVED_EXPERIMENTS.md).
+
+**Sample unit:** one training sample = **one image** (N objects / prompts per image). See §0.5.
+
+**Stage-2 GNN default for 1C/4A:** `FREEZE_GNN=false` (GNN fine-tuned jointly with student unless overridden).
+
+<details>
+<summary>Legacy full registry table (archived IDs)</summary>
 
 | ID | Category | Student | Labeled | Weak | GNN | Distill | Sym loss | Signal |
 |----|----------|---------|---------|------|-----|---------|----------|--------|
 | 1A | Baseline | M2F | 5% GT | — | — | — | — | — |
-| 1B | Baseline | M2F | — | 95% raw SAM | — | — | — | mixed |
+| 1B | [archived] | M2F | — | 95% raw SAM | — | — | — | mixed |
 | **1C** | **Main** | **M2F** | **5% GT** | **95% pseudo** | **shared ckpt** | **yes** | **yes** | **mixed** |
 | 1D | Upper bound | M2F | 100% GT | — | — | — | — | — |
-| 2A | Ablation | M2F | 5% / 95% | pseudo | **off** | yes | — | mixed |
-| 2B | Ablation | M2F | 5% / 95% | pseudo | shared | **off** | yes | mixed |
-| 2C | Ablation | M2F | 5% / 95% | pseudo | shared* | yes | **off** | mixed |
-| 3A | Signal | M2F | 5% / 95% | pseudo | shared | yes | yes | **boxes only** |
-| 3B | Signal | M2F | 5% / 95% | pseudo | shared | yes | yes | **points only** |
-| 3C | Signal | M2F | 5% / 95% | pseudo | shared | yes | yes | mixed |
+| 2A–3C | [archived] | … | … | … | … | … | … | … |
 | 4A | Generalize | YOLOv8-seg | 5% / 95% | pseudo | shared | yes | yes | mixed |
 
-\*Exp 2C: if GNN is frozen after Stage 1 (trained *with* symmetric loss), retrain Stage 1 once **without** symmetric loss → `gnn_refiner_no_sym.pt` for 2C only.
+</details>
 
 ---
 
@@ -72,7 +84,7 @@ checkpoints/gnn_refiner_stage1.pt
 - SAM encoder: load from cache (no encoder in training loop).
 - **After §0.5 fix:** SAM decoder + weak prompts → GNN refines 3 SAM masks.
 - Loss: Dice + BCE on 3 refined masks + 0.1 × symmetric loss.
-- Default: **freeze** this checkpoint in all Stage-2 experiments.
+- Default: **trainable GNN** in Stage-2 experiments 1C/4A (`FREEZE_GNN=false`). Freeze only for ablations or debugging.
 
 ---
 

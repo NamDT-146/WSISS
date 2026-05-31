@@ -197,6 +197,15 @@ Stage-1 GNN now follows PLAN §2: SAM embed initializes graph nodes; inputs are 
 
 ## Step 5 — Run experiments (train only; eval is separate)
 
+**Run the smoke test first** (~10 min, 1 GPU) before full GPU training:
+
+```bash
+bash scripts/experiments/run_smoke_test.sh
+# or: export WSSIS_SMOKE=1 WSSIS_RUN_ID=smoke_quick && bash scripts/experiments/run_smoke_test.sh
+```
+
+Smoke uses `outputs/runs/smoke_quick/` (separate from production `wssis_main`). Sets: 2 images, 10 M2F iters, 1 epoch Stage-1.
+
 **Time-saving policy:** Teacher AP runs **once** during P0.4 (full val). Stage-2 sweeps **train only** by default — no repeated teacher eval per experiment.
 
 List experiments:
@@ -205,39 +214,50 @@ List experiments:
 python -m modules.wssis.run_experiment --list
 ```
 
-### Execution plan (recommended)
+### Execution plan (recommended — True SWSIS)
 
 | Phase | What | Command |
 | ----- | ---- | ------- |
+| **0. Smoke** | Sanity check all paths | `bash scripts/experiments/run_smoke_test.sh` |
 | **1. Prep** (once) | P0 + teacher AP | `bash scripts/prep/run_p0.sh --run-id $WSSIS_RUN_ID` |
-| **2. Train** | 1C on all GPUs, then 10 others @ N parallel | `bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID --parallel` |
-| **3. Eval** | Student AP batch | `bash scripts/eval/run_all_experiment_eval.sh --run-id $WSSIS_RUN_ID` |
-| **4. Report** | Re-run teacher only if GNN changed (Exp 2C) | `bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID --full-val --skip-if-done` |
+| **2A. Train** | 1A (4 GPU) + P0.4 GNN (1 GPU) | parallel terminals — see below |
+| **2B. Train** | 1C then 4A | `bash scripts/experiments/run_experiments_parallel.sh --run-id $WSSIS_RUN_ID` |
+| **3. Eval** | Student AP batch (1A, 1C, 4A) | `bash scripts/eval/run_all_experiment_eval.sh --run-id $WSSIS_RUN_ID --full-val` |
+| **4. Report item 2** | Teacher AP on 5% holdout | `bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID --stage1-holdout` |
 
-### Main result first (Exp 1C)
+**Report item 5 (upper bound):** reuse existing full-supervised Mask2Former run as **1D** — do not re-run.
+
+### GPU phases (4-GPU node example)
 
 ```bash
+export WSSIS_RUN_ID=wssis_main
+
+# Terminal A — retrain image-level GNN (1 GPU)
+python -m modules.wssis.prep.train_stage1_gnn --run-id $WSSIS_RUN_ID --resume
+
+# Terminal B — 1A labeled-only baseline (3–4 GPUs)
+export WSSIS_NUM_GPUS=4
+python -m modules.wssis.run_experiment --exp 1A --stage train --run-id $WSSIS_RUN_ID
+
+# After P0.4 — item 2 teacher report
+bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID --stage1-holdout
+
+# Phase B — true semi-weak
+export WSSIS_NUM_GPUS=4
 python -m modules.wssis.run_experiment --exp 1C --stage train --run-id $WSSIS_RUN_ID
-# or
-python scripts/experiments/run_exp_1c.py
+export WSSIS_NUM_GPUS=2
+python -m modules.wssis.run_experiment --exp 4A --stage train --run-id $WSSIS_RUN_ID
 ```
 
-### Single experiment
+### Single experiment (active IDs)
 
+| Command | Experiment |
+| ------- | ---------- |
+| `python -m modules.wssis.run_experiment --exp 1A --stage train` | **1A** — 5% supervised lower bound |
+| `python -m modules.wssis.run_experiment --exp 1C --stage train` | **1C** — true semi-weak SWSIS (main) |
+| `python -m modules.wssis.run_experiment --exp 4A --stage train` | **4A** — YOLOv8-seg semi-weak |
 
-| Script                              | Experiment                     |
-| ----------------------------------- | ------------------------------ |
-| `scripts/experiments/run_exp_1a.py` | 1A — 5% supervised lower bound |
-| `scripts/experiments/run_exp_1b.py` | 1B — raw SAM weak baseline     |
-| `scripts/experiments/run_exp_1c.py` | **1C — full SWSIS (main)**     |
-| `scripts/experiments/run_exp_1d.py` | 1D — 100% upper bound          |
-| `scripts/experiments/run_exp_2a.py` | 2A — no GNN                    |
-| `scripts/experiments/run_exp_2b.py` | 2B — no distillation           |
-| `scripts/experiments/run_exp_2c.py` | 2C — no symmetric loss         |
-| `scripts/experiments/run_exp_3a.py` | 3A — boxes only                |
-| `scripts/experiments/run_exp_3b.py` | 3B — points only               |
-| `scripts/experiments/run_exp_3c.py` | 3C — mixed signals             |
-| `scripts/experiments/run_exp_4a.py` | 4A — YOLOv8-seg                |
+Archived scripts (`run_exp_1b.py`, `run_exp_2a.py`, …): see [report/ARCHIVED_EXPERIMENTS.md](../report/ARCHIVED_EXPERIMENTS.md).
 
 
 Dry-run (print commands only):
@@ -261,13 +281,13 @@ bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID --resume
 bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID --with-eval
 ```
 
-Order: **1C → 1A → 1B → 1D → 2A → 2B → 2C → 3A → 3B → 3C → 4A**
+Order: **1A → 1C → 4A** (active registry). See `python -m modules.wssis.run_experiment --list`.
 
 Outputs: `outputs/runs/<run_id>/experiments/<ID>/`
 
 ### Run all experiments — multi-GPU (recommended)
 
-**Hybrid schedule:** Exp **1C** uses **all visible GPUs** first, then the remaining **10** experiments run on an **N-wide pool** (1 GPU each; N = auto-detected, typically 4).
+**Hybrid schedule:** Exp **1A** uses **all visible GPUs** first, then **1C** and **4A** on the pool.
 
 ```bash
 export WSSIS_RUN_ID=wssis_main
@@ -288,8 +308,9 @@ Override detection: `export WSSIS_GPU_COUNT=4`
 
 | Phase | Experiments | GPUs (example: 4-GPU node) |
 | ----- | ----------- | ---------------------------- |
-| **1** | **1C** (main result) | All 4 (`CUDA_VISIBLE_DEVICES=0,1,2,3`, `WSSIS_NUM_GPUS=4`) |
-| **2** | 1A 1B 1D 2A 2B → then 2C 3A 3B 3C 4A | 4 parallel × 1 GPU each |
+| **1** | **1A** (labeled baseline) | All 4 |
+| **2** | **1C** (semi-weak M2F) | All 4 |
+| **3** | **4A** (semi-weak YOLO) | 2 |
 
 Logs: `outputs/runs/<id>/logs/parallel/` (`exp_1C.all_gpus.log`, `exp_*.gpuN.log`).
 

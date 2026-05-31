@@ -241,74 +241,91 @@ def visualize_stage1_epoch(
     refiner.eval()
     sam_model.eval()
 
+    use_image_dataset = hasattr(dataset, "get_raw_image")
+
     for row_idx, ds_idx in enumerate(
         tqdm(sample_indices, desc=f"Epoch {epoch} viz", leave=False, unit="sample")
     ):
-        image_rgb, mask_np, meta = dataset.get_raw_pair(ds_idx)
-        h, w = image_rgb.shape[:2]
+        if use_image_dataset:
+            image_rgb, mask_list, img_meta = dataset.get_raw_image(ds_idx)
+            object_items = [
+                (j, mask_np, int(img_meta["ann_ids"][j]))
+                for j, mask_np in enumerate(mask_list)
+            ]
+        else:
+            image_rgb, mask_np, meta = dataset.get_raw_pair(ds_idx)
+            object_items = [(0, mask_np, int(meta["ann_id"]))]
 
-        import cv2
+        for obj_idx, (obj_j, mask_np, ann_id) in enumerate(object_items):
+            h, w = image_rgb.shape[:2]
 
-        img1024 = cv2.resize(image_rgb, (1024, 1024), interpolation=cv2.INTER_LINEAR)
-        mask1024 = cv2.resize(
-            mask_np.astype(np.uint8), (1024, 1024), interpolation=cv2.INTER_NEAREST
-        )
-        prompts_orig = build_instance_prompts(mask_np > 0, policy=policy, signal_type="mixed")
-        prompts_1024 = build_instance_prompts(mask1024 > 0, policy=policy, signal_type="mixed")
-        weak_vis = _draw_weak_signal_cv2(image_rgb, prompts_orig)
+            import cv2
 
-        image_t = torch.from_numpy(img1024).permute(2, 0, 1).float().div(255.0).unsqueeze(0).to(device)
-        viz_meta = {
-            "image_id": meta["image_id"],
-            "ann_id": meta["ann_id"],
-            "split": meta.get("split", getattr(dataset, "split", "val")),
-        }
-        try:
-            sam_mask, pseudo_sam = sam_masks_from_prompts(
+            img1024 = cv2.resize(image_rgb, (1024, 1024), interpolation=cv2.INTER_LINEAR)
+            mask1024 = cv2.resize(
+                mask_np.astype(np.uint8), (1024, 1024), interpolation=cv2.INTER_NEAREST
+            )
+            prompts_orig = build_instance_prompts(mask_np > 0, policy=policy, signal_type="mixed")
+            prompts_1024 = build_instance_prompts(mask1024 > 0, policy=policy, signal_type="mixed")
+            weak_vis = _draw_weak_signal_cv2(image_rgb, prompts_orig)
+
+            image_t = torch.from_numpy(img1024).permute(2, 0, 1).float().div(255.0).unsqueeze(0).to(device)
+            image_id = img_meta["image_id"] if use_image_dataset else meta["image_id"]
+            split = img_meta.get("split", getattr(dataset, "split", "val")) if use_image_dataset else meta.get("split", getattr(dataset, "split", "val"))
+            viz_meta = {
+                "image_id": image_id,
+                "ann_id": ann_id,
+                "split": split,
+            }
+            try:
+                sam_mask, pseudo_sam = sam_masks_from_prompts(
+                    sam_model,
+                    prompts_1024,
+                    image_tensor=image_t,
+                    meta=viz_meta,
+                    pixel_mean=pixel_mean,
+                    pixel_std=pixel_std,
+                    target_hw=(h, w),
+                    mask_size=256,
+                    use_cache=use_sam_cache,
+                )
+            except Exception as e:
+                print(f"[viz] SAM predict failed for idx {ds_idx} obj {obj_j}: {e}")
+                sam_mask = np.zeros((h, w), dtype=bool)
+                pseudo_sam = sam_mask.copy()
+
+            gnn_mask = gnn_mask_from_inputs(
+                refiner,
                 sam_model,
+                image_t,
                 prompts_1024,
-                image_tensor=image_t,
-                meta=viz_meta,
-                pixel_mean=pixel_mean,
-                pixel_std=pixel_std,
+                viz_meta,
+                pixel_mean,
+                pixel_std,
                 target_hw=(h, w),
                 mask_size=256,
                 use_cache=use_sam_cache,
             )
-        except Exception as e:
-            print(f"[viz] SAM predict failed for idx {ds_idx}: {e}")
-            sam_mask = np.zeros((h, w), dtype=bool)
-            pseudo_sam = sam_mask.copy()
 
-        gnn_mask = gnn_mask_from_inputs(
-            refiner,
-            sam_model,
-            image_t,
-            prompts_1024,
-            viz_meta,
-            pixel_mean,
-            pixel_std,
-            target_hw=(h, w),
-            mask_size=256,
-            use_cache=use_sam_cache,
-        )
+            gt_mask = mask_np > 0
 
-        gt_mask = mask_np > 0
+            panels = [
+                ("Image", image_rgb),
+                ("Weak signal", weak_vis),
+                ("Raw SAM", _overlay_mask(image_rgb, sam_mask, color=(1.0, 0.3, 0.3))),
+                ("GNN refined (pseudo)", _overlay_mask(image_rgb, gnn_mask, color=(0.2, 0.5, 1.0))),
+                ("GT", _overlay_mask(image_rgb, gt_mask, color=(0.2, 0.9, 0.2))),
+            ]
 
-        panels = [
-            ("Image", image_rgb),
-            ("Weak signal", weak_vis),
-            ("Raw SAM", _overlay_mask(image_rgb, sam_mask, color=(1.0, 0.3, 0.3))),
-            ("GNN refined (pseudo)", _overlay_mask(image_rgb, gnn_mask, color=(0.2, 0.5, 1.0))),
-            ("GT", _overlay_mask(image_rgb, gt_mask, color=(0.2, 0.9, 0.2))),
-        ]
-
-        fname = out_dir / f"epoch_{epoch:03d}_sample_{row_idx:02d}_img{meta['image_id']}.png"
-        save_refinement_grid(
-            panels,
-            fname,
-            title=f"Epoch {epoch} | img {meta['image_id']} | ann {meta['ann_id']}",
-        )
+            fname = (
+                out_dir
+                / f"epoch_{epoch:03d}_sample_{row_idx:02d}_obj{obj_j:02d}_img{image_id}.png"
+            )
+            save_refinement_grid(
+                panels,
+                fname,
+                title=f"Epoch {epoch} | img {image_id} | ann {ann_id}",
+            )
 
     # Combined montage: stack rows
     _save_epoch_montage(out_dir, epoch, len(sample_indices))

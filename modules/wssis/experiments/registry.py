@@ -1,14 +1,17 @@
 """
-Experiment registry aligned with report/PLAN.md and report/EXPERIMENT.md.
+Experiment registry aligned with report/PLAN.md (5-item report matrix).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Dict, List, Literal, Optional
+from dataclasses import dataclass
+from typing import Dict, List, Literal
 
 StudentType = Literal["mask2former", "yolov8"]
 SignalType = Literal["none", "mixed", "boxes_only", "points_only"]
+
+# Archived IDs (ablations / old baselines) — kept for backward-compatible lookups
+ARCHIVED_EXPERIMENT_IDS = frozenset({"1B", "2A", "2B", "2C", "3A", "3B", "3C"})
 
 
 @dataclass(frozen=True)
@@ -27,36 +30,29 @@ class ExperimentSpec:
     gnn_checkpoint: str = "gnn_refiner_stage1.pt"
     requires_p0: bool = True
     stage2_epochs: int = 50
+    use_semi_weak: bool = False
+    freeze_gnn: bool = False
     notes: str = ""
 
 
 EXPERIMENTS: Dict[str, ExperimentSpec] = {
     "1A": ExperimentSpec(
         id="1A",
-        name="Lower bound — 5% fully supervised",
-        phase="P2",
+        name="Report 1 — 5% fully supervised Mask2Former",
+        phase="R1",
         student="mask2former",
         labeled_split="labeled_5pct",
         weak_split="none",
         use_gnn=False,
         use_distillation=False,
         weak_signal="none",
-    ),
-    "1B": ExperimentSpec(
-        id="1B",
-        name="Weak baseline — raw SAM pseudo-labels",
-        phase="P2",
-        student="mask2former",
-        labeled_split="none",
-        weak_split="weak_95pct",
-        use_gnn=False,
-        use_raw_sam_only=True,
-        use_distillation=False,
+        use_semi_weak=False,
+        notes="Lower bound: GT only on labeled_5pct.",
     ),
     "1C": ExperimentSpec(
         id="1C",
-        name="Full SWSIS (main result)",
-        phase="P1",
+        name="Report 3 — True semi-weak SWSIS (main)",
+        phase="R3",
         student="mask2former",
         labeled_split="labeled_5pct",
         weak_split="weak_95pct",
@@ -64,116 +60,62 @@ EXPERIMENTS: Dict[str, ExperimentSpec] = {
         use_distillation=True,
         use_symmetric_loss=True,
         weak_signal="mixed",
-        notes="Primary experiment for report.",
+        use_semi_weak=True,
+        freeze_gnn=False,
+        notes="50/50 labeled+weak; SAM cache + GNN pseudo + distill; GNN trainable.",
     ),
     "1D": ExperimentSpec(
         id="1D",
-        name="Upper bound — 100% fully supervised",
-        phase="P2",
+        name="Report 5 — 100% fully supervised upper bound",
+        phase="R5",
         student="mask2former",
         labeled_split="train_all",
         weak_split="none",
         use_gnn=False,
         use_distillation=False,
         weak_signal="none",
-    ),
-    "2A": ExperimentSpec(
-        id="2A",
-        name="Ablation — no GNN refiner",
-        phase="P3",
-        student="mask2former",
-        labeled_split="labeled_5pct",
-        weak_split="weak_95pct",
-        use_gnn=False,
-        use_distillation=True,
-    ),
-    "2B": ExperimentSpec(
-        id="2B",
-        name="Ablation — no feature distillation",
-        phase="P3",
-        student="mask2former",
-        labeled_split="labeled_5pct",
-        weak_split="weak_95pct",
-        use_gnn=True,
-        use_distillation=False,
-    ),
-    "2C": ExperimentSpec(
-        id="2C",
-        name="Ablation — no symmetric loss (GNN ckpt without sym)",
-        phase="P3",
-        student="mask2former",
-        labeled_split="labeled_5pct",
-        weak_split="weak_95pct",
-        use_gnn=True,
-        use_distillation=True,
-        use_symmetric_loss=False,
-        gnn_checkpoint="gnn_refiner_no_sym.pt",
-        notes="Train Stage-1 without sym loss first (P0.4b).",
-    ),
-    "3A": ExperimentSpec(
-        id="3A",
-        name="Signal sensitivity — boxes only",
-        phase="P4",
-        student="mask2former",
-        labeled_split="labeled_5pct",
-        weak_split="weak_95pct",
-        use_gnn=True,
-        use_distillation=True,
-        weak_signal="boxes_only",
-    ),
-    "3B": ExperimentSpec(
-        id="3B",
-        name="Signal sensitivity — points only",
-        phase="P4",
-        student="mask2former",
-        labeled_split="labeled_5pct",
-        weak_split="weak_95pct",
-        use_gnn=True,
-        use_distillation=True,
-        weak_signal="points_only",
-    ),
-    "3C": ExperimentSpec(
-        id="3C",
-        name="Signal sensitivity — mixed (default)",
-        phase="P4",
-        student="mask2former",
-        labeled_split="labeled_5pct",
-        weak_split="weak_95pct",
-        use_gnn=True,
-        use_distillation=True,
-        weak_signal="mixed",
+        use_semi_weak=False,
+        notes="Upper bound. Existing mislabeled 1C run can stand in for 1D.",
     ),
     "4A": ExperimentSpec(
         id="4A",
-        name="Cross-architecture — YOLOv8-seg",
-        phase="P5",
+        name="Report 4 — YOLOv8-seg true semi-weak",
+        phase="R4",
         student="yolov8",
         labeled_split="labeled_5pct",
         weak_split="weak_95pct",
         use_gnn=True,
         use_distillation=True,
         weak_signal="mixed",
+        use_semi_weak=True,
+        freeze_gnn=False,
+        notes="Same teacher pipeline as 1C with YOLO student.",
     ),
 }
 
-# Default execution order (report/PLAN.md §0.4)
-DEFAULT_RUN_ORDER: List[str] = [
-    "1C",
-    "1A",
-    "1B",
-    "1D",
-    "2A",
-    "2B",
-    "2C",
-    "3A",
-    "3B",
-    "3C",
-    "4A",
-]
+# Backward compatibility: resolve archived IDs if referenced
+_ARCHIVED_SPECS: Dict[str, ExperimentSpec] = {
+    "1B": ExperimentSpec(
+        id="1B",
+        name="[archived] Raw SAM weak baseline",
+        phase="archived",
+        student="mask2former",
+        labeled_split="none",
+        weak_split="weak_95pct",
+        use_raw_sam_only=True,
+    ),
+}
+
+DEFAULT_RUN_ORDER: List[str] = ["1A", "1C", "4A"]
 
 
 def get_experiment(exp_id: str) -> ExperimentSpec:
     key = exp_id.upper().replace("EXP", "").strip()
-    if key not in EXPERIMENTS:
-        raise KeyError(f"Unknown experiment '{exp_id}'. Choose from: {list(EXPERIMENTS)}")
-    return EXPERIMENTS[key]
+    if key in EXPERIMENTS:
+        return EXPERIMENTS[key]
+    if key in _ARCHIVED_SPECS:
+        return _ARCHIVED_SPECS[key]
+    raise KeyError(
+        f"Unknown experiment '{exp_id}'. Active: {list(EXPERIMENTS)} "
+        f"(archived: {sorted(ARCHIVED_EXPERIMENT_IDS)})"
+    )

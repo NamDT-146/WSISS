@@ -26,6 +26,7 @@ while [[ $# -gt 0 ]]; do
     --raw-only) EXTRA+=(--raw-only); shift ;;
     --full-val) EXTRA+=(--full-val); shift ;;
     --skip-if-done) EXTRA+=(--skip-if-done); shift ;;
+    --stage1-holdout) EXTRA+=(--stage1-holdout); shift ;;
     *) EXTRA+=("$1"); shift ;;
   esac
 done

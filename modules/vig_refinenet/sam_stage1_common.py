@@ -232,6 +232,111 @@ def build_batch_prompts_from_masks(
     return prompts
 
 
+def generate_pseudo_label_from_logits(
+    refined_masks_logits: torch.Tensor,
+    target_size: Optional[Tuple[int, int]] = None,
+) -> torch.Tensor:
+    """
+    2/3 vote agreement on 3 refined mask heads.
+
+    Args:
+        refined_masks_logits: [B, 3, H, W] or [3, H, W]
+    Returns:
+        pseudo_gt: [B, 1, H, W] or [1, H, W] binary float
+    """
+    if refined_masks_logits.dim() == 3:
+        refined_masks_logits = refined_masks_logits.unsqueeze(0)
+    probs = torch.sigmoid(refined_masks_logits)
+    binary = (probs > 0.5).float()
+    votes = binary.sum(dim=1, keepdim=True)
+    agreed = (votes >= 2).float()
+    if target_size is not None and agreed.shape[-2:] != target_size:
+        agreed = F.interpolate(agreed, size=target_size, mode="nearest")
+    return agreed
+
+
+@torch.no_grad()
+def forward_teacher_objects(
+    sam_model: nn.Module,
+    gnn_model: Optional[nn.Module],
+    image: torch.Tensor,
+    object_masks: torch.Tensor,
+    pixel_mean: torch.Tensor,
+    pixel_std: torch.Tensor,
+    mask_size: int,
+    meta: dict,
+    *,
+    prompt_policy: str = "train_online",
+    signal_type: str = "mixed",
+    use_gnn: bool = True,
+    use_sam_cache: bool = True,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Teacher forward for one image with N objects.
+
+    Returns:
+        pseudo_masks: [N, 1, mask_size, mask_size]
+        raw_sam_best: [N, 1, mask_size, mask_size]
+        refined_logits: [N, 3, mask_size, mask_size]
+    """
+    from modules.wssis.sam_cache import fetch_sam_embeddings_batch
+    from modules.wssis.weak_prompts import build_image_prompts
+
+    device = image.device
+    n = object_masks.shape[0]
+    mask_np_list = [
+        (object_masks[i].detach().cpu().numpy() > 0.5).astype(np.uint8)
+        for i in range(n)
+    ]
+    prompts = build_image_prompts(
+        mask_np_list,
+        policy=prompt_policy,
+        signal_type=signal_type,
+        ann_ids=meta.get("ann_ids"),
+    )
+    image_batch = image.unsqueeze(0).expand(n, -1, -1, -1)
+    metas = [
+        {
+            "image_id": meta["image_id"],
+            "ann_id": meta["ann_ids"][i],
+            "split": meta.get("split", "train"),
+        }
+        for i in range(n)
+    ]
+    masks_batch = object_masks.unsqueeze(1) if object_masks.dim() == 3 else object_masks
+
+    sam_embed, _ = fetch_sam_embeddings_batch(
+        metas,
+        sam_model,
+        image_batch,
+        pixel_mean,
+        pixel_std,
+        use_cache=use_sam_cache,
+    )
+    sam_masks_3, sam_scores = decode_sam_masks_3_batch(
+        sam_model,
+        image_batch,
+        prompts,
+        mask_size=mask_size,
+        prompt_space=mask_size,
+        image_embeddings=sam_embed,
+    )
+    weak_signal = build_weak_signal_tensor(
+        prompts,
+        spatial_size=mask_size,
+        device=device,
+        mask_np_list=mask_np_list,
+        policy=prompt_policy,
+    )
+    if use_gnn and gnn_model is not None:
+        refined_logits = gnn_model(sam_embed, image_batch, sam_masks_3, weak_signal)
+    else:
+        refined_logits = sam_masks_3
+    pseudo = generate_pseudo_label_from_logits(refined_logits, target_size=(mask_size, mask_size))
+    raw_best = _best_mask_by_score(sam_masks_3, sam_scores)
+    return pseudo, raw_best, refined_logits
+
+
 def build_weak_signal_tensor(
     prompts: list,
     spatial_size: int,

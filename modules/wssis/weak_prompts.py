@@ -328,3 +328,49 @@ def sam_prompt_for_signal(prompt: dict, signal_type: str) -> dict:
     else:
         out.update({k: v for k, v in prompt.items() if k in ("point", "bbox", "ann_id")})
     return out
+
+
+def build_image_prompts(
+    masks: List[np.ndarray],
+    policy: str = "train_online",
+    signal_type: str = "mixed",
+    rng: Optional[np.random.RandomState] = None,
+    ann_ids: Optional[List[int]] = None,
+) -> List[Dict]:
+    """Build one prompt dict per instance mask in an image."""
+    prompts = []
+    for i, mask in enumerate(masks):
+        ann_id = ann_ids[i] if ann_ids and i < len(ann_ids) else None
+        prompts.append(
+            build_instance_prompts(
+                mask,
+                policy=policy,
+                signal_type=signal_type,
+                rng=rng,
+                ann_id=ann_id,
+            )
+        )
+    return prompts
+
+
+def build_batch_prompts_from_image_masks(
+    masks_list: List[List[np.ndarray]],
+    policy: str = "train_online",
+    signal_type: str = "mixed",
+    metas: Optional[list] = None,
+) -> list:
+    """Build prompts for a batch of images (each with N instance masks)."""
+    all_prompts = []
+    for i, masks in enumerate(masks_list):
+        ann_ids = None
+        if metas and i < len(metas):
+            ann_ids = metas[i].get("ann_ids")
+        all_prompts.extend(
+            build_image_prompts(
+                masks,
+                policy=policy,
+                signal_type=signal_type,
+                ann_ids=ann_ids,
+            )
+        )
+    return all_prompts

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Post-train student eval for one experiment (teacher AP is separate — run_teacher_eval.sh).
+# Post-train student eval for one experiment (1A, 1C, or 4A).
 #
 # Usage:
-#   bash scripts/eval/run_experiment_eval.sh 1C --run-id wssis_main
+#   bash scripts/eval/run_experiment_eval.sh 1A --run-id wssis_main
 #   bash scripts/eval/run_experiment_eval.sh 1C --run-id wssis_main --full-val
 #   bash scripts/eval/run_experiment_eval.sh 1C --with-teacher-eval   # rarely needed
 set -euo pipefail
@@ -17,7 +17,7 @@ activate_wssis
 export WSSIS_REPO_ROOT="$REPO_ROOT"
 export PYTHONPATH="$REPO_ROOT:${PYTHONPATH:-}"
 
-EXP="${1:-1C}"
+EXP="${1:-1A}"
 shift || true
 
 RUN_ID="${WSSIS_RUN_ID:-}"

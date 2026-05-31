@@ -111,7 +111,7 @@ def evaluate_teacher_on_val(
 
     Returns nested dict: results[mode][signal_type] -> metrics.
     """
-    from modules.vig_refinenet.coco_sam_stage1_dataset import CocoSamStage1Dataset, collate_stage1
+    from modules.wssis.datasets.coco_image_dataset import CocoImageDataset, collate_image_to_instances
     from modules.vig_refinenet.sam_stage1_common import (
         RefinementMetricTracker,
         get_sam_pixel_stats,
@@ -141,22 +141,33 @@ def evaluate_teacher_on_val(
     mask_size = 256
     img_size = 1024
 
-    val_ds = CocoSamStage1Dataset(
+    from modules.wssis.smoke_profile import get_smoke_profile
+
+    smoke = get_smoke_profile()
+    max_images = smoke.max_images if smoke else None
+    max_objects = smoke.max_objects_per_image if smoke else None
+    num_workers = 2
+    if smoke:
+        batch_size = smoke.batch_size
+        num_workers = 0
+
+    val_ds = CocoImageDataset(
         coco_root=paths["coco_root"],
         ann_json=val_spec["val_ann"],
         image_id_txt=val_spec["val_image_txt"],
         split=val_spec["image_split"],
         img_size=img_size,
         mask_size=mask_size,
-        max_instances=max_instances,
+        max_images=max_images,
+        max_objects_per_image=max_objects,
     )
     val_loader = DataLoader(
         val_ds,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=2,
+        num_workers=num_workers,
         pin_memory=True,
-        collate_fn=collate_stage1,
+        collate_fn=collate_image_to_instances,
     )
 
     dev = resolve_device(prefer_cuda=device.startswith("cuda"))
@@ -175,7 +186,16 @@ def evaluate_teacher_on_val(
             raise FileNotFoundError(
                 f"GNN checkpoint not found: {ckpt_path}. Run P0.4 train_stage1_gnn first."
             )
-        payload = torch.load(ckpt_path, map_location=dev)
+        try:
+            payload = torch.load(ckpt_path, map_location=dev, weights_only=False)
+        except TypeError:
+            payload = torch.load(ckpt_path, map_location=dev)
+        if payload.get("wssis_ckpt_version", 1) < 2:
+            raise RuntimeError(
+                f"GNN checkpoint {ckpt_path} is pre-image-level (version "
+                f"{payload.get('wssis_ckpt_version', 1)}). Re-run P0.4: "
+                "python -m modules.wssis.prep.train_stage1_gnn --run-id <id>"
+            )
         gnn_cfg = payload.get("config", {})
         refiner = build_sam_stage1_refiner(gnn_cfg).to(dev)
         refiner.load_state_dict(payload["state_dict"], strict=False)
