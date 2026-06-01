@@ -358,7 +358,7 @@ def run_inference(
                     continue
                 print(f"[representative] Loading {exp_id} (yolov8) from {ckpt}")
                 try:
-                    model = _build_yolov8_model(ckpt, device=str(dev))
+                    model = _build_yolov8_model(ckpt)
                     students[exp_id] = (spec.student, model)
                 except Exception as exc:
                     print(f"[representative] Skip student {exp_id}: {exc}")
