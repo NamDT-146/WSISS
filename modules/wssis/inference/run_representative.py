@@ -198,16 +198,17 @@ def _student_overlay(
 
 
 def _build_m2f_predictor(config_yaml: Path, weights: Path, device: str = "cuda"):
+    # Ensure local Mask2Former repo is on sys.path *before* importing it.
+    m2f_root = repo_root() / "modules" / "mask2former"
+    if str(m2f_root) not in sys.path:
+        sys.path.insert(0, str(m2f_root))
+
     from detectron2.config import get_cfg
     from detectron2.engine import DefaultPredictor
     from detectron2.projects.deeplab import add_deeplab_config
     from mask2former import add_maskformer2_config
     from modules.wssis.mask2former_config import add_wssis_config
     from modules.wssis.mask2former_datasets import ensure_wssis_datasets_in_cfg
-
-    m2f_root = repo_root() / "modules" / "mask2former"
-    if str(m2f_root) not in sys.path:
-        sys.path.insert(0, str(m2f_root))
 
     cfg = get_cfg()
     add_deeplab_config(cfg)
