@@ -1,13 +1,11 @@
 """
 Teacher evaluation on COCO val: raw SAM vs GNN-refined (PLAN §2 / EXPERIMENT Phase 3).
 
-Reports instance-seg mask AP per weak-signal type:
-  - boxes_only
-  - points_only
-  - scribbles_only
+Default (per-signal ablation): sweeps boxes_only / points_only / scribbles_only with a
+single active weak channel — useful for raw SAM sensitivity, not for GNN (trained unified).
 
-GNN checkpoint is trained once on labeled_5pct (unified 3-channel weak maps).
-Eval sweeps signal type for SAM prompt + active weak-signal channel.
+Unified mode (--unified-weak-maps): mixed prompts + all 3 weak channels, matching
+Stage-1 training / metrics.jsonl — use this for GNN refinement claims.
 """
 
 from __future__ import annotations
@@ -16,16 +14,17 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
-import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from modules.wssis.paths import build_coco_paths, checkpoints_dir, gnn_checkpoint, sam_vit_b_checkpoint
+from modules.wssis.paths import gnn_checkpoint, sam_vit_b_checkpoint
 from modules.wssis.run_context import RunContext
 from modules.wssis.weak_prompts import WEAK_SIGNAL_TYPES
+
+UNIFIED_SIGNAL_KEY = "unified_mixed"
 
 
 def _forward_teacher_batch(
@@ -36,10 +35,12 @@ def _forward_teacher_batch(
     pixel_mean,
     pixel_std,
     mask_size,
-    active_signal,
+    signal_type: str,
     metas,
+    *,
+    unified_weak_maps: bool = False,
 ):
-    """SAM decoder (+ optional GNN) for one batch under a single weak-signal type."""
+    """SAM decoder (+ optional GNN) for one batch."""
     from modules.vig_refinenet.sam_stage1_common import (
         build_batch_prompts_from_masks,
         build_weak_signal_tensor,
@@ -49,17 +50,23 @@ def _forward_teacher_batch(
     from modules.wssis.weak_prompts import sam_prompt_for_signal
 
     device = images.device
+    prompt_signal = "mixed" if unified_weak_maps else signal_type
     prompts = build_batch_prompts_from_masks(
         gt_masks,
         policy="val_fixed",
-        signal_type=active_signal,
+        signal_type=prompt_signal,
         metas=metas,
     )
     mask_np_list = [
         (gt_masks[i, 0].detach().cpu().numpy() > 0.5).astype(np.uint8)
         for i in range(gt_masks.shape[0])
     ]
-    sam_prompts = [sam_prompt_for_signal(p, active_signal) for p in prompts]
+    if unified_weak_maps:
+        sam_prompts = prompts
+        weak_active = None
+    else:
+        sam_prompts = [sam_prompt_for_signal(p, signal_type) for p in prompts]
+        weak_active = signal_type
 
     with torch.no_grad():
         sam_embed, _ = fetch_sam_embeddings_batch(
@@ -86,12 +93,43 @@ def _forward_teacher_batch(
             spatial_size=mask_size,
             device=device,
             mask_np_list=mask_np_list,
-            active_signal=active_signal,
+            active_signal=weak_active,
             policy="val_fixed",
         )
         refined_logits = refiner(sam_embed, images, sam_masks_3, weak_signal)
 
     return sam_masks_3, sam_scores, refined_logits
+
+
+def _signal_keys(unified_weak_maps: bool) -> Tuple[str, ...]:
+    return (UNIFIED_SIGNAL_KEY,) if unified_weak_maps else WEAK_SIGNAL_TYPES
+
+
+def _pack_metrics(
+    metrics: Dict[str, float],
+    *,
+    use_gnn: bool,
+    n_instances: int,
+) -> Dict[str, float]:
+    if not use_gnn:
+        return {
+            "iou": metrics["raw_sam_iou"],
+            "ap": metrics["raw_sam_ap"],
+            "ap50": metrics["raw_sam_ap50"],
+            "n_instances": n_instances,
+        }
+    return {
+        "raw_sam_iou": metrics["raw_sam_iou"],
+        "refined_iou": metrics["refined_iou"],
+        "delta_iou": metrics["delta_iou"],
+        "raw_sam_ap": metrics["raw_sam_ap"],
+        "refined_ap": metrics["refined_ap"],
+        "delta_ap": metrics["delta_ap"],
+        "raw_sam_ap50": metrics["raw_sam_ap50"],
+        "refined_ap50": metrics["refined_ap50"],
+        "delta_ap50": metrics["delta_ap50"],
+        "n_instances": n_instances,
+    }
 
 
 def evaluate_teacher_on_val(
@@ -105,11 +143,13 @@ def evaluate_teacher_on_val(
     full_val: bool = False,
     use_labeled_5pct_holdout: bool = False,
     skip_if_done: bool = False,
+    unified_weak_maps: bool = False,
 ) -> Dict:
     """
-    Run val-set eval for raw SAM and/or GNN-refined teacher across all weak-signal types.
+    Run val-set eval for raw SAM and/or GNN-refined teacher.
 
-    Returns nested dict: results[mode][signal_type] -> metrics.
+    unified_weak_maps=False: per-signal ablation (boxes / points / scribbles).
+    unified_weak_maps=True: Stage-1 protocol (mixed prompts, 3-channel weak maps).
     """
     from modules.wssis.datasets.coco_image_dataset import CocoImageDataset, collate_image_to_instances
     from modules.vig_refinenet.sam_stage1_common import (
@@ -121,6 +161,7 @@ def evaluate_teacher_on_val(
     from modules.vig_refinenet.sam_stage1_refiner import build_sam_stage1_refiner
 
     from modules.wssis.eval_splits import eval_report_name, resolve_eval_val_split
+    from modules.wssis.paths import build_coco_paths
 
     paths = build_coco_paths()
     val_spec = resolve_eval_val_split(
@@ -128,9 +169,10 @@ def evaluate_teacher_on_val(
         use_labeled_5pct_holdout=use_labeled_5pct_holdout,
     )
     ctx = run_ctx or RunContext(task="teacher_eval")
-    report_name = eval_report_name(val_spec["scope"])
+    report_name = eval_report_name(val_spec["scope"], unified_weak_maps=unified_weak_maps)
     out_path = ctx.eval_dir / report_name
-    step_key = f"teacher_eval_{val_spec['scope']}"
+    scope_tag = f"{val_spec['scope']}_unified" if unified_weak_maps else str(val_spec["scope"])
+    step_key = f"teacher_eval_{scope_tag}"
 
     if skip_if_done and out_path.exists():
         ctx.log("Skipping teacher eval (%s exists)", out_path)
@@ -179,7 +221,6 @@ def evaluate_teacher_on_val(
     pixel_mean, pixel_std = get_sam_pixel_stats(dev)
 
     refiner = None
-    gnn_cfg = {}
     if "gnn_refined" in modes:
         ckpt_path = gnn_ckpt or gnn_checkpoint()
         if not ckpt_path.exists():
@@ -202,16 +243,18 @@ def evaluate_teacher_on_val(
         refiner.eval()
 
     results: Dict[str, Dict[str, Dict[str, float]]] = {}
+    signal_keys = _signal_keys(unified_weak_maps)
 
     for mode in modes:
         results[mode] = {}
         use_gnn = mode == "gnn_refined"
 
-        for signal_type in WEAK_SIGNAL_TYPES:
+        for signal_type in signal_keys:
             tracker = RefinementMetricTracker()
+            desc_sig = "unified" if unified_weak_maps else signal_type
             eval_pbar = tqdm(
                 val_loader,
-                desc=f"Teacher eval {mode} | {signal_type}",
+                desc=f"Teacher eval {mode} | {desc_sig}",
                 leave=False,
                 unit="batch",
             )
@@ -226,8 +269,9 @@ def evaluate_teacher_on_val(
                         pixel_mean,
                         pixel_std,
                         mask_size,
-                        signal_type,
+                        signal_type if not unified_weak_maps else UNIFIED_SIGNAL_KEY,
                         meta,
+                        unified_weak_maps=unified_weak_maps,
                     )
                     if use_gnn and refined_logits is not None:
                         tracker.update(sam_masks_3, sam_scores, refined_logits, masks)
@@ -235,36 +279,32 @@ def evaluate_teacher_on_val(
                         tracker.update(sam_masks_3, sam_scores, sam_masks_3, masks)
 
             metrics = tracker.compute()
-            n_inst = len(val_ds) if max_instances is None else min(max_instances, len(val_ds))
+            n_inst = tracker.count
+            out_key = UNIFIED_SIGNAL_KEY if unified_weak_maps else signal_type
+            results[mode][out_key] = _pack_metrics(
+                metrics, use_gnn=use_gnn, n_instances=n_inst
+            )
 
-            if not use_gnn:
-                results[mode][signal_type] = {
-                    "iou": metrics["raw_sam_iou"],
-                    "ap": metrics["raw_sam_ap"],
-                    "ap50": metrics["raw_sam_ap50"],
-                    "n_instances": n_inst,
-                }
-            else:
-                results[mode][signal_type] = {
-                    "raw_sam_iou": metrics["raw_sam_iou"],
-                    "refined_iou": metrics["refined_iou"],
-                    "delta_iou": metrics["delta_iou"],
-                    "raw_sam_ap": metrics["raw_sam_ap"],
-                    "refined_ap": metrics["refined_ap"],
-                    "delta_ap": metrics["delta_ap"],
-                    "raw_sam_ap50": metrics["raw_sam_ap50"],
-                    "refined_ap50": metrics["refined_ap50"],
-                    "delta_ap50": metrics["delta_ap50"],
-                    "n_instances": n_inst,
-                }
+    protocol = (
+        "unified_mixed_3channel"
+        if unified_weak_maps
+        else "per_signal_ablation_single_channel"
+    )
+    training_note = (
+        "Eval matches Stage-1 train/val: mixed prompts, all weak channels active (GNN input)."
+        if unified_weak_maps
+        else "GNN trained on unified maps; this eval uses one channel at a time (ablation only)."
+    )
 
     report = {
         "dataset": "coco_val",
         "eval_scope": val_spec["scope"],
+        "eval_protocol": protocol,
         "val_list": str(val_spec["val_image_txt"]),
         "gnn_checkpoint": str(gnn_ckpt or gnn_checkpoint()) if "gnn_refined" in modes else None,
-        "weak_signal_types": list(WEAK_SIGNAL_TYPES),
-        "training_note": "GNN trained on labeled_5pct with unified 3-channel weak maps (point+box+scribble)",
+        "weak_signal_types": list(signal_keys),
+        "unified_weak_maps": unified_weak_maps,
+        "training_note": training_note,
         "results": results,
     }
 
@@ -274,17 +314,25 @@ def evaluate_teacher_on_val(
     for mode, by_sig in results.items():
         for sig, m in by_sig.items():
             if mode == "raw_sam":
-                ctx.log("  [%s] %s  AP=%.4f  AP50=%.4f", mode, sig, m["ap"], m["ap50"])
+                ctx.log("  [%s] %s  IoU=%.4f  AP=%.4f  AP50=%.4f", mode, sig, m["iou"], m["ap"], m["ap50"])
             else:
                 ctx.log(
-                    "  [%s] %s  raw_AP=%.4f  refined_AP=%.4f  delta_AP=%+.4f",
+                    "  [%s] %s  raw_IoU=%.4f  refined_IoU=%.4f  "
+                    "raw_AP=%.4f  refined_AP=%.4f  delta_AP=%+.4f",
                     mode,
                     sig,
+                    m["raw_sam_iou"],
+                    m["refined_iou"],
                     m["raw_sam_ap"],
                     m["refined_ap"],
                     m["delta_ap"],
                 )
-    ctx.finalize_report_bundle(extra_files={"teacher_val_report.json": out_path})
+    bundle_name = (
+        "teacher_val_report_unified.json"
+        if unified_weak_maps
+        else "teacher_val_report.json"
+    )
+    ctx.finalize_report_bundle(extra_files={bundle_name: out_path})
     return report
 
 
@@ -309,7 +357,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--stage1-holdout",
         action="store_true",
-        help="Evaluate on labeled_5pct_val holdout only",
+        help="Evaluate on labeled_5pct_val holdout (same split as Stage-1 val / metrics.jsonl)",
+    )
+    parser.add_argument(
+        "--unified-weak-maps",
+        action="store_true",
+        help="Stage-1 protocol: mixed prompts + 3-channel weak maps (for GNN refinement report)",
     )
     parser.add_argument(
         "--skip-if-done",
@@ -332,6 +385,7 @@ def main(argv: list[str] | None = None) -> None:
         full_val=args.full_val,
         use_labeled_5pct_holdout=args.stage1_holdout,
         skip_if_done=args.skip_if_done,
+        unified_weak_maps=args.unified_weak_maps,
     )
 
 

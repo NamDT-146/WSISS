@@ -628,11 +628,21 @@ def train_stage1_gnn(
     if config.get("run_final_eval", True):
         from modules.wssis.training.evaluate_teacher import evaluate_teacher_on_val
 
-        ctx.log("Running final teacher eval on full val_all...")
+        ckpt = final_path if final_path.exists() else legacy_ckpt
+        ctx.log("Running final teacher eval on full val_all (per-signal ablation)...")
         evaluate_teacher_on_val(
-            gnn_ckpt=final_path if final_path.exists() else legacy_ckpt,
+            gnn_ckpt=ckpt,
             run_ctx=ctx,
             full_val=True,
+        )
+        ctx.log(
+            "Running holdout teacher eval (unified weak maps, matches val metrics.jsonl)..."
+        )
+        evaluate_teacher_on_val(
+            gnn_ckpt=ckpt,
+            run_ctx=ctx,
+            use_labeled_5pct_holdout=True,
+            unified_weak_maps=True,
         )
 
     ctx.close()

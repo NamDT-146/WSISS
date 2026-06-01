@@ -4,6 +4,7 @@
 #
 # Usage:
 #   bash scripts/eval/run_teacher_eval.sh --run-id wssis_main --full-val
+#   bash scripts/eval/run_teacher_eval.sh --run-id wssis_main --stage1-holdout --unified-weak-maps
 #   bash scripts/eval/run_teacher_eval.sh --run-id wssis_main --skip-if-done
 set -euo pipefail
 
@@ -27,6 +28,7 @@ while [[ $# -gt 0 ]]; do
     --full-val) EXTRA+=(--full-val); shift ;;
     --skip-if-done) EXTRA+=(--skip-if-done); shift ;;
     --stage1-holdout) EXTRA+=(--stage1-holdout); shift ;;
+    --unified-weak-maps) EXTRA+=(--unified-weak-maps); shift ;;
     *) EXTRA+=("$1"); shift ;;
   esac
 done
@@ -38,5 +40,6 @@ CMD+=("${EXTRA[@]}")
 echo "[eval] Teacher AP report: ${CMD[*]}"
 "${CMD[@]}"
 echo "[eval] Reports: outputs/runs/${RUN_ID:-<run>}/eval/teacher_val_report_*.json"
-echo "  full val: teacher_val_report_full.json (P0.4 default)"
-echo "  subset:   teacher_val_report_subset.json (--full-val omitted)"
+echo "  GNN report (unified, matches metrics.jsonl): *_unified.json with --unified-weak-maps"
+echo "  full val: teacher_val_report_full.json (per-signal ablation)"
+echo "  holdout:  teacher_val_report_stage1_holdout.json"
