@@ -349,7 +349,15 @@ Manual re-run only if GNN checkpoint changed:
 bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID --full-val --skip-if-done
 ```
 
-Reports AP/AP50 per signal type (`boxes_only`, `points_only`, `scribbles_only`) for `raw_sam` and `gnn_refined`.
+Per-signal ablation (`boxes_only`, `points_only`, `scribbles_only`) for `raw_sam`; GNN per-signal eval is **not** training-matched.
+
+**GNN refinement report (matches `metrics.jsonl` / Stage-1 val):**
+
+```bash
+bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID --stage1-holdout --unified-weak-maps
+```
+
+→ `eval/teacher_val_report_stage1_holdout_unified.json` → `results.gnn_refined.unified_mixed` (raw vs refined AP/IoU + Δ).
 
 ### Student eval (per experiment — batch after all training)
 
@@ -374,6 +382,18 @@ bash scripts/eval/run_all_experiment_eval.sh --run-id $WSSIS_RUN_ID --full-val
 ```
 
 Teacher eval is **not** run during student eval unless you explicitly pass `--with-teacher-eval` (rare).
+
+### Package for submission (essential artifacts only)
+
+Do **not** `zip -r result.zip outputs` — that pulls in huge training dumps (tensorboard, YOLO export datasets, periodic M2F checkpoints).
+
+```bash
+bash scripts/package_results.sh --run-id $WSSIS_RUN_ID -o result.zip
+```
+
+**Included:** `checkpoints/best.pt` (GNN), `experiments/*/mask2former/model_best.pth`, `experiments/4A/yolov8_seg/weights/best.pt`, `logs/metrics.jsonl`, `eval/*.json`, `visualizations/` (incl. representative inference grids), `progress.json`, experiment configs.
+
+**Excluded:** `tensorboard/`, `yolo_export/`, `model_0*.pth` periodic checkpoints, other non-essential training cache.
 
 ### Logging during training
 
@@ -458,7 +478,9 @@ bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID --paralle
 # 3) Student eval batch (after all training)
 bash scripts/eval/run_all_experiment_eval.sh --run-id $WSSIS_RUN_ID
 
-# zip outputs/runs/$WSSIS_RUN_ID/report/ for submission
+# Package essentials only (weights + metrics + viz — not full outputs/)
+bash scripts/package_results.sh --run-id $WSSIS_RUN_ID -o result.zip
+
 # Full checklist: scripts/CHECKLIST.md
 ```
 

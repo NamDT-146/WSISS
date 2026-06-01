@@ -55,7 +55,8 @@ Run after P0.4. **No extra manual labeling step** — uses fixed val prompts + o
 | Done | Item | Command | Output |
 |------|------|---------|--------|
 | ☐ | Raw SAM AP (3 signal types) | `bash scripts/eval/run_teacher_eval.sh --run-id $ID --raw-only` | `eval/teacher_val_report.json` → `results.raw_sam.*` |
-| ☐ | GNN-refined AP (3 signal types) | `bash scripts/eval/run_teacher_eval.sh --run-id $ID` | `results.gnn_refined.*` with **ΔAP** |
+| ☐ | GNN-refined AP (training-matched) | `bash scripts/eval/run_teacher_eval.sh --run-id $ID --stage1-holdout --unified-weak-maps` | `eval/teacher_val_report_stage1_holdout_unified.json` → `unified_mixed` + **ΔAP** |
+| ☐ | Per-signal ablation (raw SAM) | `bash scripts/eval/run_teacher_eval.sh --run-id $ID --full-val` | `results.raw_sam.*` (not for GNN claims) |
 | ☐ | Per-experiment student eval | `bash scripts/eval/run_experiment_eval.sh 1C --run-id $ID` | student AP hook |
 | ☐ | Batch student eval (all exps) | `bash scripts/eval/run_all_experiment_eval.sh --run-id $ID` | after training sweep |
 
@@ -154,8 +155,8 @@ bash scripts/prep/run_p0.sh --run-id $WSSIS_RUN_ID
 bash scripts/experiments/run_all_experiments.sh --run-id $WSSIS_RUN_ID --parallel 5
 bash scripts/eval/run_all_experiment_eval.sh --run-id $WSSIS_RUN_ID
 
-# zip for report
-# outputs/runs/$WSSIS_RUN_ID/report/
+# zip essentials (weights, metrics, viz — not entire outputs/)
+bash scripts/package_results.sh --run-id $WSSIS_RUN_ID -o result.zip
 ```
 
 ---
