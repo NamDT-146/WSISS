@@ -3,10 +3,10 @@ Run qualitative inference on the fixed representative val set (report figure gri
 
 Five settings (report matrix):
   1. Raw SAM (teacher, best of 3 decoder heads)
-  2. SAM + GNN refined (teacher pseudo)
-  3. Exp 1A student (5% supervised Mask2Former)
-  4. Exp 1C student (true semi-weak SWSIS)
-  5. Exp 1D student (100% GT upper bound)
+  2. SAM + Refiner refined (teacher pseudo)
+  3. Exp 1C student (true semi-weak SWSIS)
+  4. Exp 1D student (100% GT upper bound)
+  5. Exp 4A student (YOLOv8-seg semi-weak)
 
 Also saves GT overlay column.
 
@@ -44,6 +44,7 @@ from modules.wssis.inference.representative_val import (
     parse_representative_list,
     write_representative_list,
 )
+from modules.wssis.experiments.registry import get_experiment
 from modules.wssis.paths import (
     coco_root,
     gnn_checkpoint,
@@ -53,15 +54,16 @@ from modules.wssis.paths import (
 )
 from modules.wssis.run_context import RunContext
 from modules.wssis.sam_cache import fetch_sam_embeddings_batch
+from modules.wssis.stage2_constants import STAGE2_STUDENT_IMAGE_SIZE
 from modules.wssis.training.visualize import _overlay_mask, save_refinement_grid
 from modules.wssis.weak_prompts import build_instance_prompts, sam_prompt_for_signal
 
 SETTING_LABELS: Tuple[str, ...] = (
     "Raw SAM",
-    "SAM + GNN",
-    "1A (5% sup)",
+    "SAM + Refiner",
     "1C (SWSIS)",
     "1D (upper)",
+    "4A (YOLO semi-weak)",
 )
 
 
@@ -197,6 +199,72 @@ def _student_overlay(
     return _overlay_mask(image_rgb, union, color=(0.95, 0.55, 0.1))
 
 
+def _resolve_yolov8_checkpoint(exp_dir: Path) -> Optional[Path]:
+    """
+    Resolve YOLOv8-seg weights for Exp 4A.
+
+    Stage-2 uses: model.train(project=<exp_dir>, name="yolov8_seg", exist_ok=True)
+    so we expect: <exp_dir>/yolov8_seg/weights/{best,last}.pt
+    """
+    candidates = (
+        exp_dir / "yolov8_seg" / "weights" / "best.pt",
+        exp_dir / "yolov8_seg" / "weights" / "last.pt",
+    )
+    for p in candidates:
+        if p.is_file():
+            return p
+
+    # Fallback: pick the newest .pt under weights/.
+    weights = sorted(exp_dir.glob("**/weights/*.pt"))
+    return weights[-1] if weights else None
+
+
+def _build_yolov8_model(weights: Path):
+    try:
+        from ultralytics import YOLO
+    except ImportError as e:
+        raise ImportError(
+            "ultralytics is required for Exp 4A (YOLOv8) inference. "
+            "Install it in the current environment: pip install ultralytics"
+        ) from e
+    return YOLO(str(weights))
+
+
+def _yolov8_student_overlay(
+    model,
+    image_rgb: np.ndarray,
+    *,
+    device: torch.device,
+    imgsz: int = STAGE2_STUDENT_IMAGE_SIZE,
+) -> np.ndarray:
+    """Ultralytics YOLOv8-seg → union of predicted instance masks."""
+    h, w = image_rgb.shape[:2]
+    with torch.no_grad():
+        results = model.predict(
+            source=image_rgb,
+            imgsz=imgsz,
+            device=str(device),
+            verbose=False,
+        )
+
+    union = np.zeros((h, w), dtype=bool)
+    if not results:
+        return _overlay_mask(image_rgb, union, color=(0.95, 0.55, 0.1))
+
+    res0 = results[0]
+    if getattr(res0, "masks", None) is None or getattr(res0.masks, "data", None) is None:
+        return _overlay_mask(image_rgb, union, color=(0.95, 0.55, 0.1))
+
+    masks = res0.masks.data
+    for m in masks:
+        m_np = m.detach().cpu().numpy()
+        if m_np.shape != (h, w):
+            m_np = cv2.resize(m_np.astype(np.float32), (w, h), interpolation=cv2.INTER_NEAREST)
+        union |= m_np > 0.5
+
+    return _overlay_mask(image_rgb, union, color=(0.95, 0.55, 0.1))
+
+
 def _build_m2f_predictor(config_yaml: Path, weights: Path, device: str = "cuda"):
     # Ensure local Mask2Former repo is on sys.path *before* importing it.
     m2f_root = repo_root() / "modules" / "mask2former"
@@ -266,20 +334,36 @@ def run_inference(
     val_image_root = resolve_coco_image_dir(coco_root(), "val")
     dev = torch.device(device if torch.cuda.is_available() else "cpu")
 
-    print("[representative] Loading teacher (SAM + GNN)...")
+    print("[representative] Loading teacher (SAM + Refiner)...")
     sam, refiner, pixel_mean, pixel_std = _load_teacher_stack(dev, gnn_ckpt)
 
-    predictors: Dict[str, object] = {}
+    students: Dict[str, Tuple[str, object]] = {}
     if not skip_students:
-        for exp_id in ("1A", "1C", "1D"):
+        for exp_id in ("1C", "1D", "4A"):
             exp_dir = ctx.root / "experiments" / exp_id
-            cfg_path = _resolve_m2f_config(exp_dir)
-            ckpt = _resolve_m2f_checkpoint(exp_dir)
-            if cfg_path is None or ckpt is None:
-                print(f"[representative] Skip student {exp_id}: missing config or checkpoint under {exp_dir}")
-                continue
-            print(f"[representative] Loading {exp_id} from {ckpt.name}")
-            predictors[exp_id] = _build_m2f_predictor(cfg_path, ckpt, device=str(dev))
+            spec = get_experiment(exp_id)
+            if spec.student == "mask2former":
+                cfg_path = _resolve_m2f_config(exp_dir)
+                ckpt = _resolve_m2f_checkpoint(exp_dir)
+                if cfg_path is None or ckpt is None:
+                    print(f"[representative] Skip student {exp_id}: missing Mask2Former config or checkpoint under {exp_dir}")
+                    continue
+                print(f"[representative] Loading {exp_id} (mask2former) from {ckpt.name}")
+                model = _build_m2f_predictor(cfg_path, ckpt, device=str(dev))
+                students[exp_id] = (spec.student, model)
+            elif spec.student == "yolov8":
+                ckpt = _resolve_yolov8_checkpoint(exp_dir)
+                if ckpt is None:
+                    print(f"[representative] Skip student {exp_id}: missing YOLOv8 weights under {exp_dir}")
+                    continue
+                print(f"[representative] Loading {exp_id} (yolov8) from {ckpt}")
+                try:
+                    model = _build_yolov8_model(ckpt, device=str(dev))
+                    students[exp_id] = (spec.student, model)
+                except Exception as exc:
+                    print(f"[representative] Skip student {exp_id}: {exc}")
+            else:
+                print(f"[representative] Skip student {exp_id}: unknown student type {spec.student}")
 
     manifest = []
     for idx, sample in enumerate(samples):
@@ -310,13 +394,29 @@ def run_inference(
             ("Image", image_rgb),
             ("GT", gt_vis),
             ("Raw SAM", raw_vis),
-            ("SAM + GNN", gnn_vis),
+            ("SAM + Refiner", gnn_vis),
         ]
 
-        for exp_id, label in zip(("1A", "1C", "1D"), SETTING_LABELS[2:]):
-            if exp_id in predictors:
+        for exp_id, label in zip(("1C", "1D", "4A"), SETTING_LABELS[2:]):
+            if exp_id in students:
                 try:
-                    panels.append((label, _student_overlay(predictors[exp_id], image_rgb)))
+                    student_type, model = students[exp_id]
+                    if student_type == "mask2former":
+                        panels.append((label, _student_overlay(model, image_rgb)))
+                    elif student_type == "yolov8":
+                        panels.append(
+                            (
+                                label,
+                                _yolov8_student_overlay(
+                                    model,
+                                    image_rgb,
+                                    device=dev,
+                                    imgsz=STAGE2_STUDENT_IMAGE_SIZE,
+                                ),
+                            )
+                        )
+                    else:
+                        panels.append((label, image_rgb.copy()))
                 except Exception as exc:
                     print(f"[representative] {exp_id} failed on {sample.image_id}: {exc}")
                     panels.append((label, image_rgb.copy()))
@@ -339,7 +439,7 @@ def run_inference(
                 "n_objects": sample.n_objects,
                 "category_ids": list(sample.category_ids),
                 "output_png": str(fname),
-                "students_loaded": list(predictors.keys()),
+                "students_loaded": list(students.keys()),
             }
         )
 
@@ -372,7 +472,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     parser.add_argument(
         "--skip-students",
         action="store_true",
-        help="Teacher-only grids (Raw SAM + SAM+GNN); skip 1A/1C/1D Mask2Former",
+        help="Teacher-only grids (Raw SAM + SAM+Refiner); skip 1C/1D/4A students",
     )
     parser.add_argument(
         "--gnn-checkpoint",
