@@ -282,9 +282,13 @@ def build_instance_prompts(
 
     if signal_type == "points_only":
         ys, xs = np.where(mask > 0)
-        idx = rng.randint(0, len(xs))
+        if len(xs) == 0:
+            px, py = mask_interior_point(mask)
+        else:
+            idx = rng.randint(0, len(xs))
+            px, py = float(xs[idx]), float(ys[idx])
         return {
-            "point": [float(xs[idx]), float(ys[idx])],
+            "point": [px, py],
             "ann_id": ann_id,
             "signal_type": "point",
         }
@@ -300,7 +304,12 @@ def build_instance_prompts(
         }
 
     # mixed: random point with jitter (+ all channels populated at rasterize)
-    px, py = mask_centroid_point(mask)
+    ys, xs = np.where(mask > 0)
+    if len(xs) == 0:
+        px, py = mask_interior_point(mask)
+    else:
+        idx = rng.randint(0, len(xs))
+        px, py = float(xs[idx]), float(ys[idx])
     px += rng.uniform(-5, 5)
     py += rng.uniform(-5, 5)
     px = float(np.clip(px, 0, w - 1))

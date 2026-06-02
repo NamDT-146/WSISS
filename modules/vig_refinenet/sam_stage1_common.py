@@ -221,12 +221,16 @@ def build_batch_prompts_from_masks(
         ann_id = None
         if metas and i < len(metas):
             ann_id = metas[i].get("ann_id")
+        rng = None
+        if policy == "train_online" and ann_id is not None:
+            rng = np.random.RandomState(int(ann_id) % (2**31 - 1))
         prompts.append(
             build_instance_prompts(
                 mask_np,
                 policy=policy,
                 signal_type=signal_type,
                 ann_id=ann_id,
+                rng=rng,
             )
         )
     return prompts

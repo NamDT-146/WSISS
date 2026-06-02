@@ -50,7 +50,7 @@ def _build_config(
             "num_gnn_layers": 2,
             "connectivity": "grid",
             "k_neighbors": 8,
-            "num_output_masks": 1,
+            "num_output_masks": 3,
             "num_sam_mask_inputs": 3,
         },
         "training": {
@@ -62,10 +62,15 @@ def _build_config(
             "bce_weight": 1.0,
             "dice_weight": 1.0,
             "kl_weight": 0.1,
-            "sym_triplet_weight": 0.1,
-            "sym_sam_weight": 0.1,
-            "anchor_weight": 0.05,
+            "sym_weight": 0.1,
             "save_every_epochs": 1,
+            "loss_warmup": {
+                "warmup_epochs": 5,
+                "kl_start": 0.2,
+                "kl_end": 0.1,
+                "sym_start": 0.02,
+                "sym_end": 0.1,
+            },
         },
         "early_stopping": {
             "patience": 3,
@@ -99,8 +104,8 @@ def run(
     lr: float = 1e-4,
     max_instances: int | None = None,
     kl_weight: float = 0.1,
-    sym_triplet_weight: float = 0.1,
-    sym_sam_weight: float = 0.1,
+    sym_weight: float = 0.1,
+    warmup_epochs: int = 5,
     output_name: str = "gnn_refiner_stage1_v2.pt",
     device: str = "cuda",
     config_overrides: dict | None = None,
@@ -124,8 +129,10 @@ def run(
 
     cfg = _build_config(epochs, batch_size, lr, max_instances, run_id, run_dir)
     cfg["training"]["kl_weight"] = kl_weight
-    cfg["training"]["sym_triplet_weight"] = sym_triplet_weight
-    cfg["training"]["sym_sam_weight"] = sym_sam_weight
+    cfg["training"]["sym_weight"] = sym_weight
+    cfg["training"]["loss_warmup"]["warmup_epochs"] = warmup_epochs
+    cfg["training"]["loss_warmup"]["kl_end"] = kl_weight
+    cfg["training"]["loss_warmup"]["sym_end"] = sym_weight
     cfg["early_stopping"]["patience"] = patience
 
     if config_overrides:
@@ -181,8 +188,19 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--max-instances", type=int, default=None)
     parser.add_argument("--kl-weight", type=float, default=0.1)
-    parser.add_argument("--sym-triplet-weight", type=float, default=0.1)
-    parser.add_argument("--sym-sam-weight", type=float, default=0.1)
+    parser.add_argument("--sym-weight", type=float, default=0.1)
+    parser.add_argument(
+        "--sym-triplet-weight",
+        type=float,
+        default=None,
+        help="Deprecated alias for --sym-weight",
+    )
+    parser.add_argument(
+        "--warmup-epochs",
+        type=int,
+        default=5,
+        help="Epochs to ramp KL down and symmetric loss up",
+    )
     parser.add_argument("--output-name", default="gnn_refiner_stage1_v2.pt")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--no-viz", action="store_true")
@@ -231,8 +249,10 @@ def main() -> None:
         lr=args.lr,
         max_instances=args.max_instances,
         kl_weight=args.kl_weight,
-        sym_triplet_weight=args.sym_triplet_weight,
-        sym_sam_weight=args.sym_sam_weight,
+        sym_weight=args.sym_triplet_weight
+        if args.sym_triplet_weight is not None
+        else args.sym_weight,
+        warmup_epochs=args.warmup_epochs,
         output_name=args.output_name,
         device=args.device,
         config_overrides=overrides,

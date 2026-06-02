@@ -184,7 +184,7 @@ def train_stage1_gnn(
         load_sam_vit_b,
         resolve_device,
     )
-    from modules.wssis.training.gnn_losses import Stage1V2Loss
+    from modules.wssis.training.gnn_losses import Stage1LossWarmup, Stage1V2Loss
     from modules.vig_refinenet.sam_stage1_refiner import (
         build_sam_stage1_refiner,
         count_parameters,
@@ -358,12 +358,38 @@ def train_stage1_gnn(
         bce_weight=training_cfg.get("bce_weight", 1.0),
         dice_weight=training_cfg.get("dice_weight", 1.0),
     )
+    wu_cfg = training_cfg.get("loss_warmup", {})
+    loss_warmup = Stage1LossWarmup(
+        warmup_epochs=int(wu_cfg.get("warmup_epochs", 5)),
+        kl_start=float(wu_cfg.get("kl_start", 0.2)),
+        kl_end=float(wu_cfg.get("kl_end", training_cfg.get("kl_weight", 0.1))),
+        sym_start=float(wu_cfg.get("sym_start", 0.02)),
+        sym_end=float(
+            wu_cfg.get(
+                "sym_end",
+                training_cfg.get(
+                    "sym_weight",
+                    training_cfg.get("sym_triplet_weight", 0.1),
+                ),
+            )
+        ),
+    )
     v2_loss = Stage1V2Loss(
         seg_criterion,
         kl_weight=training_cfg.get("kl_weight", 0.1),
-        sym_triplet_weight=training_cfg.get("sym_triplet_weight", 0.1),
-        sym_sam_weight=training_cfg.get("sym_sam_weight", 0.1),
-        anchor_weight=training_cfg.get("anchor_weight", 0.05),
+        sym_weight=training_cfg.get(
+            "sym_weight", training_cfg.get("sym_triplet_weight", 0.1)
+        ),
+        loss_warmup=loss_warmup,
+    )
+    ctx.log(
+        "Stage-1 loss: BCE+Dice (3 heads) + 9-proposal KL/sym; warmup %d epochs "
+        "(kl %.2f->%.2f, sym %.2f->%.2f)",
+        loss_warmup.warmup_epochs,
+        loss_warmup.kl_start,
+        loss_warmup.kl_end,
+        loss_warmup.sym_start,
+        loss_warmup.sym_end,
     )
     optimizer = torch.optim.AdamW(
         refiner.parameters(),
@@ -453,20 +479,21 @@ def train_stage1_gnn(
             )
             for k in cache_epoch:
                 cache_epoch[k] += cstats.get(k, 0)
-            loss, v2_comps = v2_loss(logits, gt, sam_masks_3, weak_sig, meta)
+            loss, v2_comps = v2_loss(
+                logits, gt, sam_masks_3, meta, epoch=epoch
+            )
             comps = _loss_components(
                 seg_criterion,
                 logits.detach(),
                 gt,
                 sym_weight=0.0,
-                sym_raw=v2_comps.get("sym_sam", 0.0) + v2_comps.get("sym_triplet", 0.0),
+                sym_raw=v2_comps.get("sym_nine", 0.0),
             )
             comps["total"] = v2_comps["total"]
-            comps["sym_raw"] = v2_comps.get("sym_sam", 0.0) + v2_comps.get("sym_triplet", 0.0)
-            comps["sym_weighted"] = v2_comps.get("sym_sam_weighted", 0.0) + v2_comps.get(
-                "sym_triplet_weighted", 0.0
-            )
+            comps["sym_raw"] = v2_comps.get("sym_nine", 0.0)
+            comps["sym_weighted"] = v2_comps.get("sym_weighted", 0.0)
             comps["kl_weighted"] = v2_comps.get("kl_weighted", 0.0)
+            comps["seg"] = v2_comps.get("seg", comps.get("seg_weighted", 0.0))
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -488,6 +515,7 @@ def train_stage1_gnn(
                 total=f"{v2_comps['total']:.4f}",
                 seg=f"{v2_comps['seg']:.4f}",
                 kl=f"{v2_comps.get('kl_weighted', 0):.4f}",
+                sym=f"{v2_comps.get('sym_weighted', 0):.4f}",
             )
             del loss, logits, gt, images, masks, meta, comps, sam_masks_3, weak_sig
             if stage1_max_steps and n_batches >= stage1_max_steps:
@@ -597,6 +625,10 @@ def train_stage1_gnn(
             "val_over_threshold_ratio": val_over_thresh_sum / max(vn, 1),
             "train_agreement_rate": train_agreement_sum / max(n_batches, 1),
             "agreement_rate": val_agreement_sum / max(vn, 1),
+            **{
+                f"loss_{k}": v
+                for k, v in loss_warmup.weights_for_epoch(epoch).items()
+            },
         }
         history.append(row)
         ctx.log_metrics(row, step=epoch)
