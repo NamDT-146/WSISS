@@ -21,6 +21,7 @@ from modules.vig_refinenet.coco_sam_stage1_dataset import (
     filter_coco_json,
     load_image_ids_from_txt,
 )
+from modules.wssis.weak_prompts import WEAK_SIGNAL_TYPES
 
 
 class CocoImageDataset(Dataset):
@@ -189,3 +190,25 @@ def collate_image_to_instances(batch):
     images = torch.stack(flat_images, dim=0)
     masks = torch.stack(flat_masks, dim=0)
     return images, masks, flat_meta
+
+
+def collate_instance_triplets(batch):
+    """
+    Flatten to per-object rows, then expand each instance to 3 weak-signal types.
+
+    Returns same tensor shapes as collate_image_to_instances but B' = 3 * num_instances.
+    """
+    images, masks, flat_meta = collate_image_to_instances(batch)
+    tri_images, tri_masks, tri_meta = [], [], []
+    for i in range(images.shape[0]):
+        for sig in WEAK_SIGNAL_TYPES:
+            tri_images.append(images[i])
+            tri_masks.append(masks[i])
+            m = dict(flat_meta[i])
+            m["weak_signal_type"] = sig
+            tri_meta.append(m)
+    return (
+        torch.stack(tri_images, dim=0),
+        torch.stack(tri_masks, dim=0),
+        tri_meta,
+    )

@@ -313,9 +313,12 @@ def generate_pseudo_label_from_logits(
         )
     if refined_masks_logits.dim() == 3:
         refined_masks_logits = refined_masks_logits.unsqueeze(0)
+    effective_vote_min = vote_min
+    if refined_masks_logits.shape[1] == 1:
+        effective_vote_min = 1
     binary = binary_masks_from_logits(refined_masks_logits, confidence_threshold)
     votes = binary.sum(dim=1, keepdim=True)
-    agreed = (votes >= vote_min).float()
+    agreed = (votes >= effective_vote_min).float()
     if target_size is not None and agreed.shape[-2:] != target_size:
         agreed = F.interpolate(agreed, size=target_size, mode="nearest")
     return agreed

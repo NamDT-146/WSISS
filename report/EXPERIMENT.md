@@ -1,6 +1,8 @@
 Based on your professor's strict grading criteria—which heavily favors **problem formulation, methodology, and deep analysis** over just raw results—you need a structured, scientific approach to your experiments.
 
 > **True SWSIS (active report matrix):** Report items 1–5 map to **1A**, **P0.4 teacher eval**, **1C**, **4A**, and **1D** (upper bound). Ablations 1B/2A–2C/3A–3C are archived — see [ARCHIVED_EXPERIMENTS.md](ARCHIVED_EXPERIMENTS.md). Run `bash scripts/experiments/run_smoke_test.sh` before full GPU training.
+>
+> **GNN v2 (`wssis_v2`):** Single weak channel in/out; Stage-1 triplet batches + KL/symmetric aux losses; Stage-2 one weak type per weak image. See [IMPLEMENTATION.md](IMPLEMENTATION.md). Reuse P0.2 SAM embeddings; retrain GNN and all experiments.
 
 Here is the master list of every experiment you need to run, exactly what to log during training, and the figures you must generate for your presentation and formal report.
 

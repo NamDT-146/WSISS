@@ -85,15 +85,16 @@ Pipeline ([report/PLAN.md](report/PLAN.md) §2):
 
 1. Cached SAM embedding (frozen encoder)
 2. Weak prompts → SAM decoder → **3 mask proposals**
-3. **GNN refiner** inputs:
+3. **GNN refiner** inputs (v2):
    - `sam_embed` → **first-layer node initialization only**
    - RGB **image**
-   - **3 SAM masks**
-   - **Weak-signal maps** (3 channels: point, box, scribble)
-4. Output: **3 refined masks**; losses = Dice + BCE + symmetric loss
+   - **3 SAM multimask proposals** (decoder input)
+   - **1 weak-signal channel** (point, scribble, or box per batch row)
+4. Output: **1 refined mask** per row; main loss = Dice + BCE; aux = hierarchical KL + symmetric Dice (triplet + SAM heads)
 
-**Unified training:** all three weak-map channels are active.  
-**Eval:** report **AP** separately for `boxes_only`, `points_only`, `scribbles_only`.
+**Stage-1 training:** each instance → 3 batch rows (point / scribble / box).  
+**Stage-2 weak images:** one weak type per image (`weak_95pct_signal.json`).  
+See [report/IMPLEMENTATION.md](report/IMPLEMENTATION.md).
 
 **Weak-signal rasterization** ([modules/wssis/weak_prompts.py](modules/wssis/weak_prompts.py)):
 
@@ -107,7 +108,7 @@ Train: online jitter / random scribble length. Val: fixed prompts (`val_prompts_
 
 ### Stage 2 — Semi-weak student training
 
-- Batch: 50% `labeled_5pct` (GT) + 50% `weak_95pct` (GNN pseudo-GT: per-head confidence gate + 2/3 mask agreement)
+- Batch: 50% `labeled_5pct` (GT) + 50% `weak_95pct` (GNN pseudo-GT: confidence gate on single refined mask)
 - **Pseudo-label confidence** ([modules/wssis/pseudo_label_confidence.py](modules/wssis/pseudo_label_confidence.py)): per-head gate then 2/3 vote. Default **fixed @ 0.9** (FixMatch-style `p_cutoff`). Optional modes: **`adamatch`** (batch-relative cutoff = mean max prob × `p_cutoff`), **`freematch`** (EMA adaptive cutoff). Set in Stage-1 `config.json` → Stage-2 `WSSIS.PSEUDO_THRESHOLD_MODE` + `PSEUDO_CONFIDENCE_THRESHOLD`.
 - **Student:** Mask2Former Swin-T @ 640² (main) or YOLOv8-seg (Exp 4A)
 - **Losses:** supervised + semi-supervised + feature distillation (MSE on stride-16 vs SAM)

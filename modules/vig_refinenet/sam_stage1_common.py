@@ -298,7 +298,7 @@ def forward_teacher_objects(
     Returns:
         pseudo_masks: [N, 1, mask_size, mask_size]
         raw_sam_best: [N, 1, mask_size, mask_size]
-        refined_logits: [N, 3, mask_size, mask_size]
+        refined_logits: [N, 1, mask_size, mask_size]
     """
     from modules.wssis.sam_cache import fetch_sam_embeddings_batch
     from modules.wssis.weak_prompts import build_image_prompts
@@ -309,12 +309,15 @@ def forward_teacher_objects(
         (object_masks[i].detach().cpu().numpy() > 0.5).astype(np.uint8)
         for i in range(n)
     ]
+    from modules.wssis.weak_prompts import sam_prompt_for_signal
+
     prompts = build_image_prompts(
         mask_np_list,
         policy=prompt_policy,
         signal_type=signal_type,
         ann_ids=meta.get("ann_ids"),
     )
+    sam_prompts = [sam_prompt_for_signal(p, signal_type) for p in prompts]
     image_batch = image.unsqueeze(0).expand(n, -1, -1, -1)
     metas = [
         {
@@ -337,7 +340,7 @@ def forward_teacher_objects(
     sam_masks_3, sam_scores = decode_sam_masks_3_batch(
         sam_model,
         image_batch,
-        prompts,
+        sam_prompts,
         mask_size=mask_size,
         prompt_space=mask_size,
         image_embeddings=sam_embed,
@@ -347,6 +350,7 @@ def forward_teacher_objects(
         spatial_size=mask_size,
         device=device,
         mask_np_list=mask_np_list,
+        active_signal=signal_type,
         policy=prompt_policy,
     )
     if use_gnn and gnn_model is not None:
@@ -373,11 +377,10 @@ def build_weak_signal_tensor(
     gaussian_sigma: float = 4.0,
 ) -> torch.Tensor:
     """
-    Rasterize weak prompts to [B, 3, H, W]:
-      ch0 — point (Gaussian), ch1 — box (uniform fill), ch2 — scribble (Gaussian-widened).
+    Rasterize weak prompts to [B, C, H, W] where C=1 if ``active_signal`` is set else 3.
 
-    Unified training (``active_signal=None``): all three channels populated.
-    Per-type eval: pass ``active_signal`` in {'boxes_only','points_only','scribbles_only'}.
+    v2 training: pass ``active_signal`` in {'boxes_only','points_only','scribbles_only'}.
+    Legacy ``active_signal=None``: all three channels (deprecated).
     """
     from modules.wssis.weak_prompts import rasterize_weak_signal_maps
 
@@ -399,6 +402,13 @@ def build_weak_signal_tensor(
             policy=policy,
             gaussian_sigma=gaussian_sigma,
         )
+        if active_signal is not None:
+            channel_idx = {
+                "points_only": 0,
+                "scribbles_only": 2,
+                "boxes_only": 1,
+            }.get(active_signal, 0)
+            maps = maps[channel_idx : channel_idx + 1]
         batch.append(maps)
 
     return torch.from_numpy(np.stack(batch, axis=0)).to(device)
@@ -584,11 +594,14 @@ class RefinementMetricTracker:
     ):
         """Compare SAM best-score mask vs mean refined mask quality."""
         raw_best = _best_mask_by_score(raw_masks_3, raw_scores)
-        refined_mean = torch.sigmoid(refined_logits).mean(dim=1, keepdim=True)
+        if refined_logits.shape[1] == 1:
+            refined_pred = torch.sigmoid(refined_logits)
+        else:
+            refined_pred = torch.sigmoid(refined_logits).mean(dim=1, keepdim=True)
 
         for i in range(target.shape[0]):
             raw_iou = compute_iou(raw_best[i : i + 1], target[i : i + 1])
-            ref_iou = compute_iou(refined_mean[i : i + 1], target[i : i + 1])
+            ref_iou = compute_iou(refined_pred[i : i + 1], target[i : i + 1])
             self.raw_iou_sum += raw_iou
             self.refined_iou_sum += ref_iou
             self.raw_ap_sum += mask_ap_from_iou(raw_iou)

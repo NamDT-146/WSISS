@@ -132,7 +132,10 @@ def _teacher_overlays_for_image(
         if mask_np.sum() == 0:
             continue
         mask1024 = cv2.resize(mask_np, (1024, 1024), interpolation=cv2.INTER_NEAREST)
-        prompts = build_instance_prompts(mask1024 > 0, policy="val_fixed", signal_type="mixed")
+        viz_signal = "boxes_only"
+        prompts = build_instance_prompts(
+            mask1024 > 0, policy="val_fixed", signal_type=viz_signal, ann_id=int(ann["id"])
+        )
         meta = {"image_id": image_id, "ann_id": int(ann["id"]), "split": "val"}
 
         with torch.no_grad():
@@ -144,13 +147,13 @@ def _teacher_overlays_for_image(
                 pixel_std,
                 use_cache=True,
             )
-            sam_prompt = sam_prompt_for_signal(prompts, "points_only")
+            sam_prompt = sam_prompt_for_signal(prompts, viz_signal)
             sam_masks_3, scores = decode_sam_masks_3_batch(
                 sam_model,
                 image_t,
                 [sam_prompt],
                 mask_size=mask_size,
-                prompt_space=mask_size,
+                prompt_space=1024,
                 image_embeddings=embed,
             )
             raw_best = _best_mask_by_score(sam_masks_3, scores)
@@ -164,7 +167,7 @@ def _teacher_overlays_for_image(
                     spatial_size=mask_size,
                     device=device,
                     mask_np_list=[mask1024],
-                    active_signal=None,
+                    active_signal=viz_signal,
                     policy="val_fixed",
                 )
                 logits = refiner(embed, image_t, sam_masks_3, weak_signal)

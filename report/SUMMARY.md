@@ -1,8 +1,10 @@
 # WSSIS Results Summary
 
-**Run ID:** `wssis_main`  
+**Run ID:** `wssis_main` (legacy) · **`wssis_v2`** (GNN v2 — rerun with [IMPLEMENTATION.md](IMPLEMENTATION.md))  
 **Recorded:** 2026-06-01  
 **Active report matrix:** [EXPERIMENT.md](EXPERIMENT.md) — **1A**, **1C**, **1D**, **4A**, plus Stage-1 teacher (GNN).
+
+> **Note:** Numbers below are from **pre–GNN-v2** (`wssis_main`). After `wssis_v2` training, refresh this file from `outputs/runs/wssis_v2/`. Teacher eval is per-signal (no unified mode). YOLO: `bash scripts/eval/run_yolo_eval.sh 4A`.
 
 Primary metric for students: **instance segmentation mask AP** (COCO-style: AP, AP50, AP75, AP_S, AP_M, AP_L).
 

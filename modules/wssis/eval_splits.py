@@ -49,9 +49,9 @@ def resolve_eval_val_split(
 
 
 def eval_report_name(scope: str, *, unified_weak_maps: bool = False) -> str:
-    suffix = "_unified" if unified_weak_maps else ""
+    """Report filename for teacher eval (unified_weak_maps arg kept for API compat; ignored in v2)."""
     if scope == "full_val":
-        return f"teacher_val_report_full{suffix}.json"
+        return "teacher_val_report_full.json"
     if scope == "labeled_5pct_holdout":
-        return f"teacher_val_report_stage1_holdout{suffix}.json"
-    return f"teacher_val_report_subset{suffix}.json"
+        return "teacher_val_report_stage1_holdout.json"
+    return "teacher_val_report_subset.json"

@@ -54,8 +54,25 @@ def kaggle_config_dir() -> Path:
     return data_dir()
 
 
-def gnn_checkpoint(name: str = "gnn_refiner_stage1.pt") -> Path:
-    return checkpoints_dir() / name
+def gnn_checkpoint(name: str = "gnn_refiner_stage1_v2.pt") -> Path:
+    """Default Stage-1 GNN v2 weights (override via experiment registry)."""
+    p = checkpoints_dir() / name
+    if p.exists():
+        return p
+    legacy = checkpoints_dir() / "gnn_refiner_stage1.pt"
+    return legacy if legacy.exists() else p
+
+
+def load_weak_95pct_signal_map() -> Dict[str, str]:
+    """image_id (str) -> points_only | scribbles_only | boxes_only."""
+    path = build_coco_paths()["weak_95pct_signal_json"]
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Missing {path}. Run: python -m modules.wssis.prep.generate_splits --weak-signal-only"
+        )
+    import json
+
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def sam_vit_b_checkpoint() -> Path:
@@ -124,6 +141,7 @@ def build_coco_paths(coco_root_override: Optional[Path] = None) -> Dict[str, Pat
         "labeled_5pct_val_txt": splits_dir() / "labeled_5pct_val.txt",
         "val_sample_20pct_txt": splits_dir() / "val_sample_20pct.txt",
         "weak_95pct_txt": splits_dir() / "weak_95pct.txt",
+        "weak_95pct_signal_json": splits_dir() / "weak_95pct_signal.json",
         "labeled_5pct_json": splits_dir() / "labeled_5pct.json",
         "val_prompts_json": splits_dir() / "val_prompts_fixed.json",
         "split_report_json": splits_dir() / "split_report.json",

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Literal
 
 StudentType = Literal["mask2former", "yolov8"]
-SignalType = Literal["none", "mixed", "boxes_only", "points_only"]
+SignalType = Literal["none", "mixed", "per_image", "boxes_only", "points_only", "scribbles_only"]
 
 # Archived IDs (ablations / old baselines) — kept for backward-compatible lookups
 ARCHIVED_EXPERIMENT_IDS = frozenset({"1B", "2A", "2B", "2C", "3A", "3B", "3C"})
@@ -27,7 +27,7 @@ class ExperimentSpec:
     use_distillation: bool = False
     use_symmetric_loss: bool = True
     weak_signal: SignalType = "mixed"
-    gnn_checkpoint: str = "gnn_refiner_stage1.pt"
+    gnn_checkpoint: str = "gnn_refiner_stage1_v2.pt"
     requires_p0: bool = True
     stage2_epochs: int = 50
     use_semi_weak: bool = False
@@ -58,11 +58,11 @@ EXPERIMENTS: Dict[str, ExperimentSpec] = {
         weak_split="weak_95pct",
         use_gnn=True,
         use_distillation=True,
-        use_symmetric_loss=True,
-        weak_signal="mixed",
+        use_symmetric_loss=False,
+        weak_signal="per_image",
         use_semi_weak=True,
         freeze_gnn=False,
-        notes="50/50 labeled+weak; SAM cache + GNN pseudo + distill; GNN trainable.",
+        notes="50/50 labeled+weak; one weak type per weak image (weak_95pct_signal.json).",
     ),
     "1D": ExperimentSpec(
         id="1D",
@@ -86,7 +86,7 @@ EXPERIMENTS: Dict[str, ExperimentSpec] = {
         weak_split="weak_95pct",
         use_gnn=True,
         use_distillation=True,
-        weak_signal="mixed",
+        weak_signal="per_image",
         use_semi_weak=True,
         freeze_gnn=False,
         notes="Same teacher pipeline as 1C with YOLO student.",

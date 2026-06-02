@@ -349,15 +349,21 @@ Manual re-run only if GNN checkpoint changed:
 bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID --full-val --skip-if-done
 ```
 
-Per-signal ablation (`boxes_only`, `points_only`, `scribbles_only`) for `raw_sam`; GNN per-signal eval is **not** training-matched.
+Per-signal eval (`boxes_only`, `points_only`, `scribbles_only`) — training-matched for GNN v2.
 
-**GNN refinement report (matches `metrics.jsonl` / Stage-1 val):**
+**Holdout report (matches Stage-1 val / `metrics.jsonl`):**
 
 ```bash
-bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID --stage1-holdout --unified-weak-maps
+bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID --stage1-holdout
 ```
 
-→ `eval/teacher_val_report_stage1_holdout_unified.json` → `results.gnn_refined.unified_mixed` (raw vs refined AP/IoU + Δ).
+→ `eval/teacher_val_report_stage1_holdout.json` (per signal type).
+
+**YOLO (4A):**
+
+```bash
+bash scripts/eval/run_yolo_eval.sh 4A --run-id $WSSIS_RUN_ID
+```
 
 ### Student eval (per experiment — batch after all training)
 

@@ -1,8 +1,8 @@
 """
-Stage-1 GNN training with unified logging, checkpoints, early stopping, resume.
+Stage-1 GNN v2 training: triplet weak-signal rows, single-channel GNN I/O, KL + symmetric aux losses.
 
-Pipeline (PLAN §2):
-  SAM embed (node init) + image + SAM 3-mask proposals + weak signal → GNN → 3 refined masks
+Pipeline (PLAN §2 v2):
+  Per instance → 3 batch rows (point / scribble / box) → SAM 3 proposals + 1-ch weak → GNN → 1 mask
 """
 
 from __future__ import annotations
@@ -77,14 +77,11 @@ def _stage1_forward_batch(
     pixel_std,
     mask_size,
     prompt_policy,
-    signal_type,
     metas=None,
-    active_signal=None,
-    unified_weak_maps=True,
     use_sam_cache: bool = True,
     sam_predictor=None,
 ):
-    """Run teacher (SAM decoder) + GNN refiner for one batch."""
+    """Run SAM decoder + GNN for one batch (one weak-signal type per row in ``metas``)."""
     from modules.vig_refinenet.sam_stage1_common import (
         build_batch_prompts_from_masks,
         build_weak_signal_tensor,
@@ -94,22 +91,26 @@ def _stage1_forward_batch(
     from modules.wssis.weak_prompts import sam_prompt_for_signal
 
     device = images.device
-    prompt_signal = "mixed" if unified_weak_maps else signal_type
-    prompts = build_batch_prompts_from_masks(
-        gt_masks,
-        policy=prompt_policy,
-        signal_type=prompt_signal,
-        metas=metas,
-    )
+    weak_types = [
+        m.get("weak_signal_type", "points_only") for m in (metas or [])
+    ]
+    prompts = []
+    sam_prompts = []
+    for i in range(gt_masks.shape[0]):
+        sig = weak_types[i] if i < len(weak_types) else "points_only"
+        p = build_batch_prompts_from_masks(
+            gt_masks[i : i + 1],
+            policy=prompt_policy,
+            signal_type=sig,
+            metas=[metas[i]] if metas and i < len(metas) else None,
+        )[0]
+        prompts.append(p)
+        sam_prompts.append(sam_prompt_for_signal(p, sig))
+
     mask_np_list = [
         (gt_masks[i, 0].detach().cpu().numpy() > 0.5).astype(np.uint8)
         for i in range(gt_masks.shape[0])
     ]
-
-    if active_signal:
-        sam_prompts = [sam_prompt_for_signal(p, active_signal) for p in prompts]
-    else:
-        sam_prompts = prompts
 
     with torch.no_grad():
         sam_embed, cache_stats = fetch_sam_embeddings_batch(
@@ -129,14 +130,19 @@ def _stage1_forward_batch(
             image_embeddings=sam_embed,
             predictor=sam_predictor,
         )
-    weak_signal = build_weak_signal_tensor(
-        prompts,
-        spatial_size=mask_size,
-        device=device,
-        mask_np_list=mask_np_list,
-        active_signal=active_signal if not unified_weak_maps else None,
-        policy=prompt_policy,
-    )
+    weak_chunks = []
+    for i, sig in enumerate(weak_types):
+        weak_chunks.append(
+            build_weak_signal_tensor(
+                [prompts[i]],
+                spatial_size=mask_size,
+                device=device,
+                mask_np_list=[mask_np_list[i]],
+                active_signal=sig,
+                policy=prompt_policy,
+            )
+        )
+    weak_signal = torch.cat(weak_chunks, dim=0)
     refined_logits = refiner(
         sam_embed.detach(),
         images,
@@ -147,7 +153,8 @@ def _stage1_forward_batch(
         refined_logits,
         sam_masks_3,
         sam_scores,
-        gt_masks.repeat(1, 3, 1, 1),
+        gt_masks,
+        weak_signal,
         cache_stats,
     )
 
@@ -155,7 +162,7 @@ def _stage1_forward_batch(
 def train_stage1_gnn(
     config: dict,
     device: str = "cuda",
-    output_name: str = "gnn_refiner_stage1.pt",
+    output_name: str = "gnn_refiner_stage1_v2.pt",
     run_ctx: Optional[RunContext] = None,
     resume: bool = False,
 ) -> Path:
@@ -168,7 +175,7 @@ def train_stage1_gnn(
 
     from modules.wssis.datasets.coco_image_dataset import (
         CocoImageDataset,
-        collate_image_to_instances,
+        collate_instance_triplets,
     )
     from modules.vig_refinenet.sam_stage1_common import (
         CombinedSegLoss,
@@ -176,8 +183,8 @@ def train_stage1_gnn(
         get_sam_pixel_stats,
         load_sam_vit_b,
         resolve_device,
-        symmetric_loss,
     )
+    from modules.wssis.training.gnn_losses import Stage1V2Loss
     from modules.vig_refinenet.sam_stage1_refiner import (
         build_sam_stage1_refiner,
         count_parameters,
@@ -189,7 +196,6 @@ def train_stage1_gnn(
     mask_size = config.get("data", {}).get("mask_size", 256)
     prompt_policy_train = training_cfg.get("prompt_policy", "train_online")
     prompt_policy_val = config.get("visualization", {}).get("prompt_policy", "val_fixed")
-    signal_type = training_cfg.get("weak_signal", "mixed")
     from modules.wssis.pseudo_label_confidence import (
         agreement_rate,
         build_threshold_policy,
@@ -311,7 +317,7 @@ def train_stage1_gnn(
         num_workers=num_workers,
         pin_memory=True,
         drop_last=True,
-        collate_fn=collate_image_to_instances,
+        collate_fn=collate_instance_triplets,
     )
     val_loader = DataLoader(
         val_ds,
@@ -319,7 +325,7 @@ def train_stage1_gnn(
         shuffle=False,
         num_workers=num_workers,
         pin_memory=True,
-        collate_fn=collate_image_to_instances,
+        collate_fn=collate_instance_triplets,
     )
 
     dev = resolve_device(prefer_cuda=device.startswith("cuda"))
@@ -338,17 +344,22 @@ def train_stage1_gnn(
     refiner = build_sam_stage1_refiner(config).to(dev)
     ctx.log("GNN params: %s", f"{count_parameters(refiner):,}")
 
-    criterion = CombinedSegLoss(
+    seg_criterion = CombinedSegLoss(
         bce_weight=training_cfg.get("bce_weight", 1.0),
         dice_weight=training_cfg.get("dice_weight", 1.0),
+    )
+    v2_loss = Stage1V2Loss(
+        seg_criterion,
+        kl_weight=training_cfg.get("kl_weight", 0.1),
+        sym_triplet_weight=training_cfg.get("sym_triplet_weight", 0.1),
+        sym_sam_weight=training_cfg.get("sym_sam_weight", 0.1),
+        anchor_weight=training_cfg.get("anchor_weight", 0.05),
     )
     optimizer = torch.optim.AdamW(
         refiner.parameters(),
         lr=training_cfg.get("lr", 1e-4),
         weight_decay=training_cfg.get("weight_decay", 1e-4),
     )
-
-    sym_w = training_cfg.get("symmetric_weight", 0.0) if config.get("use_symmetric_loss", True) else 0.0
     start_epoch = 1
     history = []
     best_val_ap = -1.0
@@ -366,9 +377,9 @@ def train_stage1_gnn(
     if resume:
         ckpt = ctx.load_checkpoint()
         if ckpt:
-            if ckpt.get("wssis_ckpt_version", 1) < 2:
+            if ckpt.get("wssis_ckpt_version", 1) < 3:
                 raise RuntimeError(
-                    "Checkpoint is pre-image-level (per-instance). Re-run P0.4 after True SWSIS pull."
+                    "Checkpoint is pre-GNN-v2 (wssis_ckpt_version < 3). Re-run P0.4 for wssis_v2."
                 )
             refiner.load_state_dict(ckpt["state_dict"], strict=False)
             if "optimizer" in ckpt:
@@ -417,7 +428,7 @@ def train_stage1_gnn(
         )
         for images, masks, meta in train_pbar:
             images, masks = images.to(dev), masks.to(dev)
-            logits, _, _, gt3, cstats = _stage1_forward_batch(
+            logits, sam_masks_3, _, gt, weak_sig, cstats = _stage1_forward_batch(
                 sam,
                 refiner,
                 images,
@@ -426,27 +437,26 @@ def train_stage1_gnn(
                 pixel_std,
                 mask_size,
                 prompt_policy_train,
-                signal_type,
                 metas=meta,
-                unified_weak_maps=True,
                 use_sam_cache=use_sam_cache,
                 sam_predictor=sam_predictor,
             )
             for k in cache_epoch:
                 cache_epoch[k] += cstats.get(k, 0)
-            loss = criterion(logits, gt3)
-            sym_val = 0.0
-            if sym_w > 0:
-                sym_l = symmetric_loss(logits)
-                loss = loss + sym_w * sym_l
-                sym_val = sym_l.item()
+            loss, v2_comps = v2_loss(logits, gt, sam_masks_3, weak_sig, meta)
             comps = _loss_components(
-                criterion,
+                seg_criterion,
                 logits.detach(),
-                gt3,
-                sym_weight=sym_w,
-                sym_raw=sym_val,
+                gt,
+                sym_weight=0.0,
+                sym_raw=v2_comps.get("sym_sam", 0.0) + v2_comps.get("sym_triplet", 0.0),
             )
+            comps["total"] = v2_comps["total"]
+            comps["sym_raw"] = v2_comps.get("sym_sam", 0.0) + v2_comps.get("sym_triplet", 0.0)
+            comps["sym_weighted"] = v2_comps.get("sym_sam_weighted", 0.0) + v2_comps.get(
+                "sym_triplet_weighted", 0.0
+            )
+            comps["kl_weighted"] = v2_comps.get("kl_weighted", 0.0)
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -465,11 +475,11 @@ def train_stage1_gnn(
                     logits, threshold_policy=threshold_policy, update=False
                 )
             train_pbar.set_postfix(
-                total=f"{comps['total']:.4f}",
-                seg=f"{comps['seg_weighted']:.4f}",
-                sym=f"{comps['sym_weighted']:.4f}",
+                total=f"{v2_comps['total']:.4f}",
+                seg=f"{v2_comps['seg']:.4f}",
+                kl=f"{v2_comps.get('kl_weighted', 0):.4f}",
             )
-            del loss, logits, gt3, images, masks, meta, comps
+            del loss, logits, gt, images, masks, meta, comps, sam_masks_3, weak_sig
             if stage1_max_steps and n_batches >= stage1_max_steps:
                 break
 
@@ -503,7 +513,7 @@ def train_stage1_gnn(
         with torch.no_grad():
             for images, masks, meta in val_pbar:
                 images, masks = images.to(dev), masks.to(dev)
-                logits, sam_masks_3, sam_scores, gt3, _ = _stage1_forward_batch(
+                logits, sam_masks_3, sam_scores, gt, _, _ = _stage1_forward_batch(
                     sam,
                     refiner,
                     images,
@@ -512,16 +522,14 @@ def train_stage1_gnn(
                     pixel_std,
                     mask_size,
                     prompt_policy_val,
-                    signal_type,
                     metas=meta,
-                    unified_weak_maps=True,
                     use_sam_cache=use_sam_cache,
                     sam_predictor=sam_predictor,
                 )
-                comps = _loss_components(criterion, logits, gt3)
+                comps = _loss_components(seg_criterion, logits, gt)
                 _accumulate_losses(val_totals, comps)
                 vn += 1
-                tracker.update(sam_masks_3, sam_scores, logits, masks)
+                tracker.update(sam_masks_3, sam_scores, logits, gt)
                 val_effective_thresh_sum += threshold_policy.effective_threshold(
                     logits, update=False
                 )
@@ -536,7 +544,7 @@ def train_stage1_gnn(
                     bce_w=f"{comps['bce_weighted']:.4f}",
                     dice_w=f"{comps['dice_weighted']:.4f}",
                 )
-                del logits, sam_masks_3, sam_scores, gt3, images, masks, meta, comps
+                del logits, sam_masks_3, sam_scores, gt, images, masks, meta, comps
         clear_sam_predictor(sam)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -622,7 +630,7 @@ def train_stage1_gnn(
             "best_val_refined_ap": best_val_ap,
             "early_stop_best": early_stop.best,
             "early_stop_counter": early_stop.counter,
-            "wssis_ckpt_version": 2,
+            "wssis_ckpt_version": 3,
             "sample_unit": "image",
         }
         ctx.save_checkpoint(payload, "last.pt", copy_to_legacy=legacy_ckpt if epoch == max_epochs else None)
@@ -685,14 +693,11 @@ def train_stage1_gnn(
             run_ctx=ctx,
             full_val=True,
         )
-        ctx.log(
-            "Running holdout teacher eval (unified weak maps, matches val metrics.jsonl)..."
-        )
+        ctx.log("Running holdout teacher eval (per-signal, training-matched)...")
         evaluate_teacher_on_val(
             gnn_ckpt=ckpt,
             run_ctx=ctx,
             use_labeled_5pct_holdout=True,
-            unified_weak_maps=True,
         )
 
     ctx.close()

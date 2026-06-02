@@ -50,6 +50,8 @@ def _build_config(
             "num_gnn_layers": 2,
             "connectivity": "grid",
             "k_neighbors": 8,
+            "num_output_masks": 1,
+            "num_sam_mask_inputs": 3,
         },
         "training": {
             "batch_size": batch_size,
@@ -58,7 +60,10 @@ def _build_config(
             "weight_decay": 1e-4,
             "bce_weight": 1.0,
             "dice_weight": 1.0,
-            "symmetric_weight": 0.1,
+            "kl_weight": 0.1,
+            "sym_triplet_weight": 0.1,
+            "sym_sam_weight": 0.1,
+            "anchor_weight": 0.05,
             "save_every_epochs": 1,
         },
         "early_stopping": {
@@ -67,7 +72,7 @@ def _build_config(
             "mode": "max",
         },
         "logging": {"tensorboard": True, "wandb": True},
-        "use_symmetric_loss": True,
+        "wssis_gnn_version": 2,
         "run_final_eval": True,
         "pseudo_label": {
             "threshold_mode": "fixed",
@@ -92,8 +97,10 @@ def run(
     batch_size: int = 4,
     lr: float = 1e-4,
     max_instances: int | None = None,
-    symmetric_weight: float = 0.1,
-    output_name: str = "gnn_refiner_stage1.pt",
+    kl_weight: float = 0.1,
+    sym_triplet_weight: float = 0.1,
+    sym_sam_weight: float = 0.1,
+    output_name: str = "gnn_refiner_stage1_v2.pt",
     device: str = "cuda",
     config_overrides: dict | None = None,
     run_id: str | None = None,
@@ -115,8 +122,9 @@ def run(
     from modules.wssis.training.stage1 import train_stage1_gnn
 
     cfg = _build_config(epochs, batch_size, lr, max_instances, run_id, run_dir)
-    cfg["training"]["symmetric_weight"] = symmetric_weight
-    cfg["use_symmetric_loss"] = symmetric_weight > 0
+    cfg["training"]["kl_weight"] = kl_weight
+    cfg["training"]["sym_triplet_weight"] = sym_triplet_weight
+    cfg["training"]["sym_sam_weight"] = sym_sam_weight
     cfg["early_stopping"]["patience"] = patience
 
     if config_overrides:
@@ -166,8 +174,10 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--max-instances", type=int, default=None)
-    parser.add_argument("--symmetric-weight", type=float, default=0.1)
-    parser.add_argument("--output-name", default="gnn_refiner_stage1.pt")
+    parser.add_argument("--kl-weight", type=float, default=0.1)
+    parser.add_argument("--sym-triplet-weight", type=float, default=0.1)
+    parser.add_argument("--sym-sam-weight", type=float, default=0.1)
+    parser.add_argument("--output-name", default="gnn_refiner_stage1_v2.pt")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--no-viz", action="store_true")
     parser.add_argument("--viz-samples", type=int, default=4)
@@ -214,7 +224,9 @@ def main() -> None:
         batch_size=args.batch_size,
         lr=args.lr,
         max_instances=args.max_instances,
-        symmetric_weight=args.symmetric_weight,
+        kl_weight=args.kl_weight,
+        sym_triplet_weight=args.sym_triplet_weight,
+        sym_sam_weight=args.sym_sam_weight,
         output_name=args.output_name,
         device=args.device,
         config_overrides=overrides,

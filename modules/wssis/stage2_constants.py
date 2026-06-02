@@ -13,4 +13,4 @@ SAM_EMBED_SPATIAL = 64
 
 # Detectron2 DATALOADER.NUM_WORKERS for Stage-2 (eval / non-semi-weak train).
 # Semi-weak train still uses 0 workers (GPU teacher in mapper); see train_net.py.
-STAGE2_DATALOADER_NUM_WORKERS = 8
+STAGE2_DATALOADER_NUM_WORKERS = 4

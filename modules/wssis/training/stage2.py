@@ -397,8 +397,11 @@ def evaluate_experiment(
             full_val=full_val,
         )
 
-    if spec.student != "mask2former":
-        print(f"[eval] YOLO eval uses training-time val for {spec.id}")
+    if spec.student == "yolov8":
+        from modules.wssis.training.evaluate_yolo import evaluate_yolo_experiment
+
+        print(f"[eval] YOLOv8-seg COCO-style val for {spec.id}...")
+        evaluate_yolo_experiment(spec, run_ctx=ctx)
         return
 
     m2f_dir = out_dir / "mask2former"

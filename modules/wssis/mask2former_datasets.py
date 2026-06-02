@@ -20,6 +20,7 @@ from modules.wssis.eval_splits import resolve_eval_val_split
 from modules.wssis.mask2former_dataloader import WssisSemiWeakDataset
 from modules.wssis.paths import (
     build_coco_paths,
+    load_weak_95pct_signal_map,
     resolve_coco_image_dir,
     resolve_experiment_train_image_txt,
 )
@@ -99,12 +100,17 @@ def _register_semi_weak_train(
     labeled_json: Path,
     weak_teacher_json: Path,
     image_root: Path,
+    weak_signal_map: dict[str, str] | None = None,
 ) -> None:
     if name in DatasetCatalog.list():
         return
 
     labeled = load_coco_json(str(labeled_json), str(image_root), name + "_lbl")
     weak_full = load_coco_json(str(weak_teacher_json), str(image_root), name + "_w")
+    signal_map = weak_signal_map or load_weak_95pct_signal_map()
+    for rec in weak_full:
+        sig = signal_map.get(str(rec.get("image_id", "")), "points_only")
+        rec["wssis_weak_signal_type"] = sig
 
     smoke = get_smoke_profile()
     if smoke:

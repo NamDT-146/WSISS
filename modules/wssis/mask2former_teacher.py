@@ -48,14 +48,7 @@ class WssisTeacherStack(nn.Module):
         self.gnn = None
         if use_gnn:
             ckpt = gnn_ckpt_path or gnn_checkpoint()
-            cfg = {
-                "model": {
-                    "embed_dim": 256,
-                    "gnn_hidden": 128,
-                    "num_gnn_layers": 3,
-                    "mask_size": mask_size,
-                }
-            }
+            cfg = {"model": {"mask_size": mask_size, "num_output_masks": 1, "num_sam_mask_inputs": 3}}
             self.gnn = build_sam_stage1_refiner(cfg).to(device)
             state = torch.load(ckpt, map_location=device, weights_only=False)
             sd = state.get("state_dict", state)

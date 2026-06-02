@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from modules.wssis.paths import build_coco_paths, ensure_dirs, splits_dir
-from modules.wssis.weak_prompts import build_instance_prompts
+from modules.wssis.weak_prompts import WEAK_SIGNAL_TYPES, build_instance_prompts
 
 try:
     from pycocotools import mask as mask_utils
@@ -48,6 +48,43 @@ def _ann_to_mask(ann: dict, height: int, width: int) -> np.ndarray:
             m = m.max(axis=2)
         return m.astype(np.uint8)
     raise ValueError("Need pycocotools for polygon masks")
+
+
+def assign_weak_signal_types(weak_ids: list[int], seed: int = 42) -> dict[str, str]:
+    """Equal thirds: points / scribbles / boxes over sorted weak image IDs."""
+    sorted_ids = sorted(weak_ids)
+    mapping: dict[str, str] = {}
+    for i, img_id in enumerate(sorted_ids):
+        mapping[str(img_id)] = WEAK_SIGNAL_TYPES[i % len(WEAK_SIGNAL_TYPES)]
+    return mapping
+
+
+def write_weak_signal_assignments(weak_ids: list[int], paths: dict, seed: int = 42) -> dict[str, str]:
+    """Write ``weak_95pct_signal.json`` and optional per-type image lists."""
+    mapping = assign_weak_signal_types(weak_ids, seed=seed)
+    paths["weak_95pct_signal_json"].write_text(
+        json.dumps(mapping, indent=2), encoding="utf-8"
+    )
+    by_type: dict[str, list[int]] = {t: [] for t in WEAK_SIGNAL_TYPES}
+    for img_id, sig in mapping.items():
+        by_type[sig].append(int(img_id))
+    for sig, ids in by_type.items():
+        stem = sig.replace("_only", "")
+        out = splits_dir() / f"weak_95pct_{stem}.txt"
+        out.write_text("\n".join(_ids_to_txt_lines(sorted(ids), "train")) + "\n", encoding="utf-8")
+    return mapping
+
+
+def run_weak_signal_only(seed: int = 42) -> None:
+    """Assign weak-signal types from existing weak_95pct.txt (no split regen)."""
+    ensure_dirs()
+    paths = build_coco_paths()
+    if not paths["weak_95pct_txt"].exists():
+        raise FileNotFoundError(f"Missing {paths['weak_95pct_txt']}. Run P0.1 first.")
+    weak_ids = _load_image_ids(paths["weak_95pct_txt"])
+    mapping = write_weak_signal_assignments(weak_ids, paths, seed=seed)
+    counts = {t: sum(1 for v in mapping.values() if v == t) for t in WEAK_SIGNAL_TYPES}
+    print("[P0.1] weak_95pct_signal.json written:", counts)
 
 
 def run(
@@ -122,6 +159,7 @@ def run(
     paths["weak_95pct_txt"].write_text(
         "\n".join(_ids_to_txt_lines(weak_ids, "train")) + "\n", encoding="utf-8"
     )
+    write_weak_signal_assignments(weak_ids, paths, seed=seed)
 
     # labeled_5pct.json — ann ids per image
     with open(paths["train_ann"], encoding="utf-8") as f:
@@ -206,7 +244,15 @@ def main() -> None:
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--force", action="store_true")
+    parser.add_argument(
+        "--weak-signal-only",
+        action="store_true",
+        help="Only write weak_95pct_signal.json from existing weak_95pct.txt",
+    )
     args = parser.parse_args()
+    if args.weak_signal_only:
+        run_weak_signal_only(seed=args.seed)
+        return
     run(
         labeled_fraction=args.labeled_fraction,
         stage1_holdout_fraction=args.stage1_holdout_fraction,

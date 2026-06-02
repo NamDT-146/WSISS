@@ -3,7 +3,8 @@ Stage-1 GNN refiner (PLAN §2 / §0.5).
 
 SAM image embedding initializes first-layer graph nodes only.
 Trainable inputs: RGB image, 3 SAM proposal masks, weak-signal spatial map.
-Outputs 3 refined mask logits at mask_size (256).
+Outputs 1 refined mask logit per weak-signal type at mask_size (256).
+SAM still provides 3 multimask proposals as encoder input.
 """
 
 from __future__ import annotations
@@ -167,12 +168,14 @@ class SamStage1Refiner(nn.Module):
         num_gnn_layers: int = 2,
         connectivity: str = "grid",
         k_neighbors: int = 8,
-        num_output_masks: int = 3,
+        num_output_masks: int = 1,
+        num_sam_mask_inputs: int = 3,
     ):
         super().__init__()
         self.grid_size = grid_size
         self.mask_size = mask_size
         self.num_output_masks = num_output_masks
+        self.num_sam_mask_inputs = num_sam_mask_inputs
 
         # SAM embed → node initialization (not the sole forward input)
         self.node_init_proj = nn.Sequential(
@@ -190,14 +193,14 @@ class SamStage1Refiner(nn.Module):
         )
 
         self.mask_encoder = nn.Sequential(
-            nn.Conv2d(num_output_masks, 32, kernel_size=3, padding=1),
+            nn.Conv2d(num_sam_mask_inputs, 32, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(32, feat_dim, kernel_size=1),
         )
 
-        # weak signal: ch0 point (Gaussian), ch1 box (uniform), ch2 scribble (Gaussian-widened)
+        # single weak channel: point OR box OR scribble (type selected per batch row)
         self.weak_encoder = nn.Sequential(
-            nn.Conv2d(3, 32, kernel_size=3, padding=1),
+            nn.Conv2d(1, 32, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(32, feat_dim, kernel_size=1),
         )
@@ -245,10 +248,10 @@ class SamStage1Refiner(nn.Module):
             sam_embed: [B, 256, 64, 64] frozen SAM encoder — node init only.
             images: [B, 3, H, W] RGB in [0, 1].
             sam_masks_3: [B, 3, mask_size, mask_size] SAM decoder proposals.
-            weak_signal: [B, 3, mask_size, mask_size] spatial weak prompts.
+            weak_signal: [B, 1, mask_size, mask_size] single weak channel.
 
         Returns:
-            mask_logits: [B, 3, mask_size, mask_size]
+            mask_logits: [B, 1, mask_size, mask_size]
         """
         B = sam_embed.shape[0]
 
@@ -298,7 +301,8 @@ def build_sam_stage1_refiner(config: Optional[dict] = None) -> SamStage1Refiner:
         num_gnn_layers=model_cfg.get("num_gnn_layers", 2),
         connectivity=model_cfg.get("connectivity", "grid"),
         k_neighbors=model_cfg.get("k_neighbors", 8),
-        num_output_masks=model_cfg.get("num_output_masks", 3),
+        num_output_masks=model_cfg.get("num_output_masks", 1),
+        num_sam_mask_inputs=model_cfg.get("num_sam_mask_inputs", 3),
     )
 
 

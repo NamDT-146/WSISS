@@ -79,6 +79,8 @@ def sam_masks_from_prompts(
     pixel_std: torch.Tensor,
     target_hw: Tuple[int, int],
     mask_size: int = 256,
+    prompt_space: int = 1024,
+    signal_type: str = "boxes_only",
     use_cache: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
@@ -92,6 +94,9 @@ def sam_masks_from_prompts(
 
     from modules.vig_refinenet.sam_stage1_common import decode_sam_masks_3_batch
     from modules.wssis.sam_cache import fetch_sam_embeddings_batch
+    from modules.wssis.weak_prompts import sam_prompt_for_signal
+
+    sam_prompt = sam_prompt_for_signal(prompts, signal_type)
 
     with torch.no_grad():
         embed, _ = fetch_sam_embeddings_batch(
@@ -105,9 +110,9 @@ def sam_masks_from_prompts(
         sam_masks_3, scores = decode_sam_masks_3_batch(
             sam_model,
             image_tensor,
-            [prompts],
+            [sam_prompt],
             mask_size=mask_size,
-            prompt_space=mask_size,
+            prompt_space=prompt_space,
             image_embeddings=embed,
         )
 
@@ -133,11 +138,14 @@ def gnn_mask_from_inputs(
     pixel_mean: torch.Tensor,
     pixel_std: torch.Tensor,
     target_hw: Tuple[int, int],
+    mask_np_1024: np.ndarray,
     mask_size: int = 256,
+    prompt_space: int = 1024,
+    signal_type: str = "boxes_only",
     use_cache: bool = True,
     threshold_policy=None,
 ) -> np.ndarray:
-    """GNN refined mask at original image resolution (PLAN §2 pipeline)."""
+    """GNN refined mask at original image resolution (PLAN §2 v2 pipeline)."""
     from modules.vig_refinenet.sam_stage1_common import (
         build_weak_signal_tensor,
         decode_sam_masks_3_batch,
@@ -146,7 +154,16 @@ def gnn_mask_from_inputs(
     from modules.wssis.weak_prompts import sam_prompt_for_signal
 
     device = image_tensor.device
-    mask_np = np.zeros((mask_size, mask_size), dtype=np.uint8)
+    mask_small = (
+        np.asarray(mask_np_1024 > 0).astype(np.uint8)
+        if mask_np_1024.shape[0] != mask_size
+        else mask_np_1024
+    )
+    import cv2
+
+    if mask_small.shape[0] != mask_size:
+        mask_small = cv2.resize(mask_small, (mask_size, mask_size), interpolation=cv2.INTER_NEAREST)
+
     with torch.no_grad():
         embed, _ = fetch_sam_embeddings_batch(
             [meta],
@@ -156,21 +173,21 @@ def gnn_mask_from_inputs(
             pixel_std,
             use_cache=use_cache,
         )
-        sam_prompt = sam_prompt_for_signal(prompts, "points_only")
+        sam_prompt = sam_prompt_for_signal(prompts, signal_type)
         sam_masks_3, _ = decode_sam_masks_3_batch(
             sam_model,
             image_tensor,
             [sam_prompt],
             mask_size=mask_size,
-            prompt_space=mask_size,
+            prompt_space=prompt_space,
             image_embeddings=embed,
         )
         weak_signal = build_weak_signal_tensor(
             [prompts],
             spatial_size=mask_size,
             device=device,
-            mask_np_list=[mask_np],
-            active_signal=None,
+            mask_np_list=[mask_small],
+            active_signal=signal_type,
             policy="val_fixed",
         )
         logits = refiner(embed, image_tensor, sam_masks_3, weak_signal)
@@ -267,8 +284,13 @@ def visualize_stage1_epoch(
             mask1024 = cv2.resize(
                 mask_np.astype(np.uint8), (1024, 1024), interpolation=cv2.INTER_NEAREST
             )
-            prompts_orig = build_instance_prompts(mask_np > 0, policy=policy, signal_type="mixed")
-            prompts_1024 = build_instance_prompts(mask1024 > 0, policy=policy, signal_type="mixed")
+            viz_signal = "boxes_only"
+            prompts_orig = build_instance_prompts(
+                mask_np > 0, policy=policy, signal_type=viz_signal, ann_id=ann_id
+            )
+            prompts_1024 = build_instance_prompts(
+                mask1024 > 0, policy=policy, signal_type=viz_signal, ann_id=ann_id
+            )
             weak_vis = _draw_weak_signal_cv2(image_rgb, prompts_orig)
 
             image_t = torch.from_numpy(img1024).permute(2, 0, 1).float().div(255.0).unsqueeze(0).to(device)
@@ -280,7 +302,7 @@ def visualize_stage1_epoch(
                 "split": split,
             }
             try:
-                sam_mask, pseudo_sam = sam_masks_from_prompts(
+                sam_mask, _pseudo_sam = sam_masks_from_prompts(
                     sam_model,
                     prompts_1024,
                     image_tensor=image_t,
@@ -289,6 +311,8 @@ def visualize_stage1_epoch(
                     pixel_std=pixel_std,
                     target_hw=(h, w),
                     mask_size=256,
+                    prompt_space=1024,
+                    signal_type=viz_signal,
                     use_cache=use_sam_cache,
                 )
             except Exception as e:
@@ -305,7 +329,10 @@ def visualize_stage1_epoch(
                 pixel_mean,
                 pixel_std,
                 target_hw=(h, w),
+                mask_np_1024=mask1024,
                 mask_size=256,
+                prompt_space=1024,
+                signal_type=viz_signal,
                 use_cache=use_sam_cache,
                 threshold_policy=threshold_policy,
             )
@@ -314,9 +341,15 @@ def visualize_stage1_epoch(
 
             panels = [
                 ("Image", image_rgb),
-                ("Weak signal", weak_vis),
-                ("Raw SAM", _overlay_mask(image_rgb, sam_mask, color=(1.0, 0.3, 0.3))),
-                ("GNN refined (pseudo)", _overlay_mask(image_rgb, gnn_mask, color=(0.2, 0.5, 1.0))),
+                (f"Weak ({viz_signal})", weak_vis),
+                (
+                    f"Raw SAM ({viz_signal})",
+                    _overlay_mask(image_rgb, sam_mask, color=(1.0, 0.3, 0.3)),
+                ),
+                (
+                    f"GNN ({viz_signal})",
+                    _overlay_mask(image_rgb, gnn_mask, color=(0.2, 0.5, 1.0)),
+                ),
                 ("GT", _overlay_mask(image_rgb, gt_mask, color=(0.2, 0.9, 0.2))),
             ]
 

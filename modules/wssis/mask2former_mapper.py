@@ -21,7 +21,7 @@ class WssisSemiWeakMapper(COCOInstanceNewBaselineDatasetMapper):
         super().__init__(cfg, is_train)
         self._teacher = teacher
         self._use_semi = getattr(cfg.WSSIS, "USE_SEMI_WEAK", False)
-        self._weak_signal = getattr(cfg.WSSIS, "WEAK_SIGNAL", "mixed")
+        self._weak_signal_default = getattr(cfg.WSSIS, "WEAK_SIGNAL", "points_only")
 
     def __call__(self, dataset_dict):
         d = dict(dataset_dict)
@@ -66,12 +66,16 @@ class WssisSemiWeakMapper(COCOInstanceNewBaselineDatasetMapper):
             "category_ids": cats,
             "split": "train",
         }
+        weak_sig = dataset_dict.get(
+            "wssis_weak_signal_type",
+            self._weak_signal_default if self._weak_signal_default != "none" else "points_only",
+        )
         pseudo_masks, cat_ids = self._teacher.generate_pseudo_for_image(
             img_t,
             masks_sam,
             meta,
             prompt_policy="train_online",
-            signal_type=self._weak_signal if self._weak_signal != "none" else "mixed",
+            signal_type=weak_sig,
         )
         pseudo_masks = map_teacher_pseudo_to_size(
             pseudo_masks,

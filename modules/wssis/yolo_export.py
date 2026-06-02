@@ -19,7 +19,7 @@ from modules.wssis.mask2former_datasets import (
     _coco_thing_classes,
     coco_anns_to_masks_for_image,
 )
-from modules.wssis.paths import build_coco_paths, resolve_coco_image_dir
+from modules.wssis.paths import build_coco_paths, load_weak_95pct_signal_map, resolve_coco_image_dir
 from modules.wssis.smoke_profile import get_smoke_profile
 from modules.wssis.stage2_constants import STAGE2_STUDENT_IMAGE_SIZE
 from modules.wssis.teacher_pseudo import map_teacher_pseudo_to_size, prepare_sam_teacher_inputs
@@ -133,6 +133,8 @@ def prepare_yolo_semi_weak_dataset(
         for ann in data["annotations"]:
             anns_by_img.setdefault(ann["image_id"], []).append(ann)
 
+        weak_signal_map = load_weak_95pct_signal_map() if use_pseudo else {}
+
         teacher = None
         device = None
         if use_pseudo and spec.use_gnn:
@@ -183,8 +185,13 @@ def prepare_yolo_semi_weak_dataset(
                         "ann_ids": [a["id"] for a in anns[: len(mask_np_list)]],
                         "split": split_tag,
                     }
+                    weak_sig = weak_signal_map.get(str(img_id), "points_only")
                     pseudo, cats = teacher.generate_pseudo_for_image(
-                        img_t, masks_sam, meta, prompt_policy="train_online"
+                        img_t,
+                        masks_sam,
+                        meta,
+                        prompt_policy="train_online",
+                        signal_type=weak_sig,
                     )
                     pseudo = map_teacher_pseudo_to_size(
                         pseudo,
