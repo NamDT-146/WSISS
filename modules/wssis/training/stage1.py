@@ -222,6 +222,20 @@ def train_stage1_gnn(
     if "freematch_time_p" in _pl_cfg:
         threshold_policy._time_p = float(_pl_cfg["freematch_time_p"])
 
+    from modules.wssis.stage1_distributed import (
+        barrier,
+        build_stage1_dataloader,
+        stage1_is_main,
+        stage1_world_size,
+        state_dict_for_save,
+        unwrap_refiner,
+        wrap_stage1_refiner,
+    )
+
+    _world = world_size if world_size > 1 else stage1_world_size()
+    _rank = local_rank
+    _main = (_rank == 0) if _world > 1 else stage1_is_main()
+
     if _main:
         ctx = run_ctx or RunContext(
             run_id=config.get("run_id"),
@@ -245,19 +259,6 @@ def train_stage1_gnn(
             ctx.init_wandb(config)
 
     from modules.wssis.eval_splits import resolve_eval_val_split
-    from modules.wssis.stage1_distributed import (
-        barrier,
-        build_stage1_dataloader,
-        stage1_is_main,
-        stage1_world_size,
-        state_dict_for_save,
-        unwrap_refiner,
-        wrap_stage1_refiner,
-    )
-
-    _world = stage1_world_size() if world_size == 1 else world_size
-    _rank = local_rank
-    _main = stage1_is_main() if _world == 1 else (_rank == 0)
 
     data_cfg = config["data"]
     use_labeled_holdout = data_cfg.get("val_use_labeled_holdout", True)

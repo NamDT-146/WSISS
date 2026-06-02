@@ -98,6 +98,32 @@ def _build_config(
     }
 
 
+def stage1_distributed_worker(
+    local_rank: int,
+    world_size: int,
+    cfg: dict,
+    device: str,
+    output_name: str,
+    run_dir: str,
+    run_id: str,
+    resume: bool,
+) -> None:
+    """Top-level worker for ``stage1_launch`` (must be picklable by ``mp.spawn``)."""
+    from modules.wssis.run_context import RunContext
+    from modules.wssis.training.stage1 import train_stage1_gnn
+
+    run_ctx = RunContext(run_id=run_id, run_dir=run_dir, task="stage1_gnn") if local_rank == 0 else None
+    train_stage1_gnn(
+        cfg,
+        device=device,
+        output_name=output_name,
+        run_ctx=run_ctx,
+        resume=resume,
+        local_rank=local_rank,
+        world_size=world_size,
+    )
+
+
 def run(
     epochs: int = 30,
     batch_size: int = 4,
@@ -171,19 +197,11 @@ def run(
     )
     if num_gpus > 1:
         cfg["num_gpus"] = num_gpus
-
-        def _worker(local_rank: int, world_size: int) -> None:
-            train_stage1_gnn(
-                cfg,
-                device=device,
-                output_name=output_name,
-                run_ctx=ctx if local_rank == 0 else None,
-                resume=resume,
-                local_rank=local_rank,
-                world_size=world_size,
-            )
-
-        launch(_worker, num_gpus)
+        launch(
+            stage1_distributed_worker,
+            num_gpus,
+            args=(cfg, device, output_name, str(ctx.root), ctx.run_id, resume),
+        )
         out = checkpoints_dir() / output_name
     else:
         out = train_stage1_gnn(
