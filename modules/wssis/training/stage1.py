@@ -498,6 +498,14 @@ def train_stage1_gnn(
     viz_samples = viz_cfg.get("num_samples", 4)
     if smoke:
         viz_samples = smoke.viz_samples
+    if _world > 1 and viz_enabled and not viz_cfg.get("ddp_viz", False):
+        viz_enabled = False
+        if _main and ctx is not None:
+            ctx.log(
+                "DDP (%d GPUs): per-epoch viz disabled (set visualization.ddp_viz=true or use --no-viz). "
+                "Rank 0-only viz caused other ranks to deadlock without a barrier.",
+                _world,
+            )
     if viz_enabled:
         from modules.wssis.training.visualize import visualize_stage1_epoch
 
@@ -796,6 +804,11 @@ def train_stage1_gnn(
             break
 
         if _main and viz_enabled:
+            if _world > 1 and ctx is not None:
+                ctx.log(
+                    "Rank 0: epoch %d visualization (other GPUs synced after barrier)",
+                    epoch,
+                )
             visualize_stage1_epoch(
                 epoch=epoch,
                 dataset=val_ds,
@@ -810,6 +823,9 @@ def train_stage1_gnn(
                 use_sam_cache=use_sam_cache,
                 threshold_policy=threshold_policy,
             )
+
+        # DDP: all ranks must finish rank-0-only work before the next train step.
+        barrier()
 
         if _main:
             epoch_pbar.set_postfix(

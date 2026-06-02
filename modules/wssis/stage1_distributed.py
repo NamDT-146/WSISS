@@ -58,6 +58,8 @@ def wrap_stage1_refiner(refiner: torch.nn.Module, local_rank: int) -> torch.nn.M
         device_ids=[local_rank] if torch.cuda.is_available() else None,
         output_device=local_rank if torch.cuda.is_available() else None,
         find_unused_parameters=False,
+        static_graph=True,
+        gradient_as_bucket_view=False,
     )
 
 
