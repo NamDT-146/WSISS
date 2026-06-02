@@ -64,10 +64,11 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
 
-    if args.smoke:
-        import os
+    import os
 
-        os.environ["WSSIS_SMOKE"] = "1"
+    # Avoid accidental smoke behavior from stale shell environment variables.
+    os.environ["WSSIS_SMOKE"] = "1" if args.smoke else "0"
+    if args.smoke:
         os.environ.setdefault("WSSIS_NUM_GPUS", "1")
         if not args.run_id:
             args.run_id = "smoke_quick"

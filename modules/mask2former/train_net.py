@@ -460,6 +460,12 @@ class Trainer(DefaultTrainer):
         patience = int(getattr(cfg.WSSIS, "EARLY_STOPPING_PATIENCE", 0))
         monitor_suffix = getattr(cfg.WSSIS, "EARLY_STOPPING_MONITOR", "segm/AP")
         use_full_val_final = getattr(cfg.WSSIS, "USE_FULL_VAL_FINAL", False)
+        logging.getLogger("mask2former").info(
+            "WSSIS early stopping config: monitor=%s patience=%d eval_period=%d",
+            monitor_suffix,
+            patience,
+            eval_period,
+        )
 
         def test_subset():
             self._last_eval_results = self.test(self.cfg, self.model)

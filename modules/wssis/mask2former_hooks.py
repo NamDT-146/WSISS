@@ -243,7 +243,8 @@ class WssisEarlyStoppingHook(HookBase):
     ):
         self._period = eval_period
         self._monitor_suffix = monitor_suffix
-        self._logger = logging.getLogger(__name__)
+        # Use the main Mask2Former logger so messages are visible in train logs.
+        self._logger = logging.getLogger("mask2former")
         self._es = EarlyStopping(
             patience=patience,
             monitor=monitor_suffix,
