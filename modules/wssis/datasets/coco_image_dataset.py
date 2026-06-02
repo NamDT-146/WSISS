@@ -151,6 +151,115 @@ class CocoImageDataset(Dataset):
         return np.array(image, dtype=np.uint8), masks, meta
 
 
+class CocoInstanceDataset(Dataset):
+    """
+    One sample = one COCO instance (Stage-1 GNN training unit).
+
+    ``DataLoader.batch_size`` counts instances; collate expands each to 3 weak-signal rows.
+    """
+
+    def __init__(
+        self,
+        coco_root: Path,
+        ann_json: Path,
+        image_id_txt: Path,
+        split: str = "train",
+        img_size: int = 1024,
+        mask_size: int = 256,
+        max_images: Optional[int] = None,
+        max_objects_per_image: Optional[int] = None,
+        max_instances: Optional[int] = None,
+    ):
+        from modules.wssis.paths import resolve_coco_image_dir
+
+        self.coco_root = Path(coco_root)
+        self.img_size = img_size
+        self.mask_size = mask_size
+        self.split = split
+        self.image_dir = resolve_coco_image_dir(self.coco_root, split)
+
+        with open(ann_json, "r", encoding="utf-8") as f:
+            full_data = json.load(f)
+
+        subset_ids = load_image_ids_from_txt(image_id_txt)
+        data = filter_coco_json(full_data, subset_ids)
+
+        self.images = {img["id"]: img for img in data["images"]}
+        anns_by_image: Dict[int, list] = defaultdict(list)
+        for ann in data["annotations"]:
+            if ann.get("iscrowd", 0):
+                continue
+            img_id = ann["image_id"]
+            if img_id in self.images:
+                anns_by_image[img_id].append(ann)
+
+        allowed_images = sorted(self.images.keys())
+        if max_images is not None and max_images < len(allowed_images):
+            rng = np.random.RandomState(42)
+            pick = rng.choice(len(allowed_images), size=max_images, replace=False)
+            allowed_images = sorted(allowed_images[i] for i in pick)
+
+        self.samples: List[Tuple[int, dict]] = []
+        for img_id in allowed_images:
+            anns = anns_by_image.get(img_id, [])
+            if max_objects_per_image and len(anns) > max_objects_per_image:
+                anns = anns[:max_objects_per_image]
+            for ann in anns:
+                self.samples.append((img_id, ann))
+
+        if max_instances is not None and max_instances < len(self.samples):
+            rng = np.random.RandomState(42)
+            idx = rng.choice(len(self.samples), size=max_instances, replace=False)
+            self.samples = [self.samples[i] for i in sorted(idx)]
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, idx: int):
+        img_id, ann = self.samples[idx]
+        info = self.images[img_id]
+        file_name = info["file_name"]
+        path = self.image_dir / file_name
+        if not path.exists():
+            path = self.image_dir / Path(file_name).name
+
+        image = Image.open(path).convert("RGB")
+        mask_np = ann_to_mask(ann, info["height"], info["width"])
+        mask_img = Image.fromarray((mask_np * 255).astype(np.uint8))
+
+        image = image.resize((self.img_size, self.img_size), Image.BILINEAR)
+        mask_img = mask_img.resize((self.mask_size, self.mask_size), Image.NEAREST)
+
+        image_t = torch.from_numpy(np.array(image)).permute(2, 0, 1).float() / 255.0
+        mask_t = torch.from_numpy(np.array(mask_img)).float().unsqueeze(0) / 255.0
+        mask_t = (mask_t > 0.5).float()
+
+        meta = {
+            "image_id": img_id,
+            "ann_id": int(ann["id"]),
+            "category_id": int(ann.get("category_id", 0)),
+            "split": self.split,
+        }
+        return image_t, mask_t, meta
+
+    def get_raw_pair(self, idx: int):
+        """Full-resolution RGB + instance mask for visualization."""
+        img_id, ann = self.samples[idx]
+        info = self.images[img_id]
+        path = self.image_dir / info["file_name"]
+        if not path.exists():
+            path = self.image_dir / Path(info["file_name"]).name
+        image = Image.open(path).convert("RGB")
+        mask_np = ann_to_mask(ann, info["height"], info["width"]).astype(np.uint8)
+        meta = {
+            "image_id": img_id,
+            "ann_id": int(ann["id"]),
+            "split": self.split,
+            "orig_size": image.size[::-1],
+        }
+        return np.array(image, dtype=np.uint8), mask_np, meta
+
+
 def collate_image_stage1(batch):
     """Batch of images; masks variable N per image (list)."""
     images = torch.stack([b[0] for b in batch], dim=0)
@@ -194,19 +303,27 @@ def collate_image_to_instances(batch):
 
 def collate_instance_triplets(batch):
     """
-    Flatten to per-object rows, then expand each instance to 3 weak-signal types.
+    Instance-level batch: ``batch_size`` = COCO instances (not images).
 
-    Returns same tensor shapes as collate_image_to_instances but B' = 3 * num_instances.
+    Expands each instance to 3 rows (point / scribble / box). Forward batch = 3 * batch_size.
     """
-    images, masks, flat_meta = collate_image_to_instances(batch)
     tri_images, tri_masks, tri_meta = [], [], []
-    for i in range(images.shape[0]):
+    for img_t, mask_t, meta in batch:
+        if mask_t.dim() == 2:
+            mask_t = mask_t.unsqueeze(0)
+        elif mask_t.dim() == 3 and mask_t.shape[0] > 1:
+            raise ValueError(
+                "collate_instance_triplets expects instance-level samples [1,H,W]; "
+                "use CocoInstanceDataset or collate_image_to_instances for image batches."
+            )
         for sig in WEAK_SIGNAL_TYPES:
-            tri_images.append(images[i])
-            tri_masks.append(masks[i])
-            m = dict(flat_meta[i])
+            tri_images.append(img_t)
+            tri_masks.append(mask_t)
+            m = dict(meta)
             m["weak_signal_type"] = sig
             tri_meta.append(m)
+    if not tri_images:
+        raise ValueError("Empty batch in collate_instance_triplets")
     return (
         torch.stack(tri_images, dim=0),
         torch.stack(tri_masks, dim=0),

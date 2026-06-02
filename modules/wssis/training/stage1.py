@@ -174,7 +174,7 @@ def train_stage1_gnn(
         sys.path.insert(0, str(repo))
 
     from modules.wssis.datasets.coco_image_dataset import (
-        CocoImageDataset,
+        CocoInstanceDataset,
         collate_instance_triplets,
     )
     from modules.vig_refinenet.sam_stage1_common import (
@@ -242,20 +242,22 @@ def train_stage1_gnn(
         max_images = smoke.max_images
         max_objects = smoke.max_objects_per_image
 
+    max_instances = data_cfg.get("max_instances")
     common = dict(
         coco_root=paths["coco_root"],
         img_size=data_cfg.get("img_size", 1024),
         mask_size=mask_size,
         max_images=max_images,
         max_objects_per_image=max_objects,
+        max_instances=max_instances,
     )
-    train_ds = CocoImageDataset(
+    train_ds = CocoInstanceDataset(
         ann_json=paths["train_ann"],
         image_id_txt=paths["train_txt"],
         split="train",
         **common,
     )
-    val_ds = CocoImageDataset(
+    val_ds = CocoInstanceDataset(
         ann_json=paths["val_ann"],
         image_id_txt=paths["val_txt"],
         split=paths["val_image_split"],
@@ -271,25 +273,17 @@ def train_stage1_gnn(
     config.setdefault("data", {})["train_split"] = data_cfg.get("train_split", "labeled_5pct_train")
     config["data"]["val_split"] = data_cfg.get("val_split", "labeled_5pct_val")
     config["data"]["val_eval_scope"] = val_spec["scope"]
-    config["data"]["n_train_images"] = len(train_ds)
-    config["data"]["n_val_images"] = len(val_ds)
-    n_train_obj = sum(len(s[1]) for s in train_ds.samples)
-    n_val_obj = sum(len(s[1]) for s in val_ds.samples)
-    config["data"]["n_train_objects"] = n_train_obj
-    config["data"]["n_val_objects"] = n_val_obj
-    ctx.log(
-        "Stage-1 train: %d images (%d objects) from %s",
-        len(train_ds),
-        n_train_obj,
-        paths["train_txt"],
-    )
-    ctx.log(
-        "Stage-1 val (early stop): %d images (%d objects) from %s (%s)",
-        len(val_ds),
-        n_val_obj,
-        paths["val_txt"],
-        val_spec["scope"],
-    )
+    n_train_inst = len(train_ds)
+    n_val_inst = len(val_ds)
+    train_image_ids = {img_id for img_id, _ in train_ds.samples}
+    val_image_ids = {img_id for img_id, _ in val_ds.samples}
+    config["data"]["n_train_instances"] = n_train_inst
+    config["data"]["n_val_instances"] = n_val_inst
+    config["data"]["n_train_images"] = len(train_image_ids)
+    config["data"]["n_val_images"] = len(val_image_ids)
+    config["data"]["n_train_objects"] = n_train_inst
+    config["data"]["n_val_objects"] = n_val_inst
+    config["data"]["batch_unit"] = "instance"
     use_sam_cache = data_cfg.get("use_sam_embedding_cache", True)
     if use_sam_cache and not sam_embeddings_dir().exists():
         ctx.log(
@@ -298,9 +292,8 @@ def train_stage1_gnn(
         )
     elif use_sam_cache:
         ctx.log("SAM embedding cache enabled (P0.2) — skips ViT-B encoder when npy exists")
-    ctx.save_config(config)
 
-    batch_size = training_cfg.get("batch_size", 4)
+    batch_size = training_cfg.get("batch_size", 4)  # instances per batch (not images)
     num_workers = data_cfg.get("num_workers", 4)
     stage1_max_steps = training_cfg.get("max_steps")
     max_epochs = training_cfg.get("epochs", 30)
@@ -309,6 +302,23 @@ def train_stage1_gnn(
         num_workers = min(num_workers, 0)
         stage1_max_steps = smoke.stage1_max_steps
         max_epochs = min(max_epochs, smoke.stage1_epochs)
+    ctx.log(
+        "Stage-1 train: %d instances (%d images) from %s; batch_size=%d instances "
+        "(x3 weak signals = %d forward rows/batch)",
+        n_train_inst,
+        len(train_image_ids),
+        paths["train_txt"],
+        batch_size,
+        batch_size * 3,
+    )
+    ctx.log(
+        "Stage-1 val (early stop): %d instances (%d images) from %s (%s)",
+        n_val_inst,
+        len(val_image_ids),
+        paths["val_txt"],
+        val_spec["scope"],
+    )
+    ctx.save_config(config)
 
     train_loader = DataLoader(
         train_ds,
@@ -631,7 +641,7 @@ def train_stage1_gnn(
             "early_stop_best": early_stop.best,
             "early_stop_counter": early_stop.counter,
             "wssis_ckpt_version": 3,
-            "sample_unit": "image",
+            "sample_unit": "instance",
         }
         ctx.save_checkpoint(payload, "last.pt", copy_to_legacy=legacy_ckpt if epoch == max_epochs else None)
         if is_best:

@@ -54,6 +54,7 @@ def _build_config(
             "num_sam_mask_inputs": 3,
         },
         "training": {
+            # batch_size = COCO instances per step (collate expands each to 3 weak-signal rows)
             "batch_size": batch_size,
             "epochs": epochs,
             "lr": lr,
@@ -171,7 +172,12 @@ def run(
 def main() -> None:
     parser = argparse.ArgumentParser(description="P0.4 train Stage-1 GNN")
     parser.add_argument("--epochs", type=int, default=30)
-    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=4,
+        help="Instances per batch (each instance becomes 3 rows: point/scribble/box)",
+    )
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--max-instances", type=int, default=None)
     parser.add_argument("--kl-weight", type=float, default=0.1)
