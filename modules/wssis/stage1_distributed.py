@@ -13,13 +13,12 @@ from torch.utils.data.distributed import DistributedSampler
 
 
 def resolve_stage1_num_gpus(explicit: Optional[int] = None) -> int:
+    """Stage-1 GNN GPU count (default 1; opt in via ``--num-gpus`` or ``WSSIS_NUM_GPUS``)."""
     if explicit is not None and explicit > 0:
         return int(explicit)
     env = os.environ.get("WSSIS_NUM_GPUS", "").strip()
     if env.isdigit():
         return max(1, int(env))
-    if torch.cuda.is_available():
-        return max(1, torch.cuda.device_count())
     return 1
 
 

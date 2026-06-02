@@ -518,6 +518,13 @@ def train_stage1_gnn(
     for epoch in epoch_pbar:
         if train_sampler is not None:
             train_sampler.set_epoch(epoch)
+        if _main and ctx is not None:
+            ctx.log(
+                "epoch %d/%d: train (all %d ranks) then val on rank 0",
+                epoch,
+                max_epochs,
+                _world,
+            )
         t0 = time.perf_counter()
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats(dev)
@@ -793,6 +800,10 @@ def train_stage1_gnn(
                     epoch,
                     early_stop.patience,
                 )
+
+        # Rank 0 checkpoint/logging above is slow; non-zero ranks must not enter
+        # collectives until rank 0 finishes or NCCL broadcast deadlocks.
+        barrier()
 
         if _world > 1:
             import torch.distributed as dist

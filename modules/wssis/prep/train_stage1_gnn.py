@@ -248,7 +248,7 @@ def main() -> None:
         "--num-gpus",
         type=int,
         default=None,
-        help="GPUs for DDP (default: WSSIS_NUM_GPUS or torch.cuda.device_count())",
+        help="GPUs for DDP (default: 1; set WSSIS_NUM_GPUS or pass N>1 to enable multi-GPU)",
     )
     parser.add_argument("--no-viz", action="store_true")
     parser.add_argument("--viz-samples", type=int, default=4)
