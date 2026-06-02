@@ -19,6 +19,18 @@ from modules.wssis.paths import checkpoints_dir, sam_embeddings_dir, sam_vit_b_c
 from modules.wssis.run_context import EarlyStopping, RunContext, gpu_memory_mb
 
 
+def _expand_gt_to_logits(logits: torch.Tensor, masks: torch.Tensor) -> torch.Tensor:
+    """Match GT [B,1,H,W] to logits [B,3,H,W] for per-head BCE/Dice logging."""
+    if (
+        logits.dim() == 4
+        and masks.dim() == 4
+        and logits.shape[1] > 1
+        and masks.shape[1] == 1
+    ):
+        return masks.expand(-1, logits.shape[1], -1, -1)
+    return masks
+
+
 def _loss_components(
     criterion,
     logits: torch.Tensor,
@@ -28,6 +40,7 @@ def _loss_components(
     sym_raw: float = 0.0,
 ) -> Dict[str, float]:
     """Decompose BCE, Dice, symmetric, and weighted totals for metrics.jsonl."""
+    masks = _expand_gt_to_logits(logits, masks)
     bce_raw = criterion.bce(logits, masks).item()
     dice_raw = criterion.dice(logits, masks).item()
     bce_weighted = criterion.bce_weight * bce_raw
@@ -165,6 +178,8 @@ def train_stage1_gnn(
     output_name: str = "gnn_refiner_stage1_v2.pt",
     run_ctx: Optional[RunContext] = None,
     resume: bool = False,
+    local_rank: int = 0,
+    world_size: int = 1,
 ) -> Path:
     import sys
     from pathlib import Path as P
@@ -207,19 +222,42 @@ def train_stage1_gnn(
     if "freematch_time_p" in _pl_cfg:
         threshold_policy._time_p = float(_pl_cfg["freematch_time_p"])
 
-    ctx = run_ctx or RunContext(
-        run_id=config.get("run_id"),
-        run_dir=config.get("run_dir"),
-        task="stage1_gnn",
+    if _main:
+        ctx = run_ctx or RunContext(
+            run_id=config.get("run_id"),
+            run_dir=config.get("run_dir"),
+            task="stage1_gnn",
+        )
+    else:
+        ctx = None
+    ckpt_dir = (
+        Path(config["run_dir"]) / "checkpoints"
+        if config.get("run_dir")
+        else (ctx.ckpt_dir if ctx is not None else checkpoints_dir())
     )
-    ctx.save_config(config)
-    ctx.update_step("stage1_gnn", {"status": "running", "epoch": 0})
-    if config.get("logging", {}).get("tensorboard", True):
-        ctx.init_tensorboard()
-    if config.get("logging", {}).get("wandb", True):
-        ctx.init_wandb(config)
+
+    if _main and ctx is not None:
+        ctx.save_config(config)
+        ctx.update_step("stage1_gnn", {"status": "running", "epoch": 0})
+        if config.get("logging", {}).get("tensorboard", True):
+            ctx.init_tensorboard()
+        if config.get("logging", {}).get("wandb", True):
+            ctx.init_wandb(config)
 
     from modules.wssis.eval_splits import resolve_eval_val_split
+    from modules.wssis.stage1_distributed import (
+        barrier,
+        build_stage1_dataloader,
+        stage1_is_main,
+        stage1_world_size,
+        state_dict_for_save,
+        unwrap_refiner,
+        wrap_stage1_refiner,
+    )
+
+    _world = stage1_world_size() if world_size == 1 else world_size
+    _rank = local_rank
+    _main = stage1_is_main() if _world == 1 else (_rank == 0)
 
     data_cfg = config["data"]
     use_labeled_holdout = data_cfg.get("val_use_labeled_holdout", True)
@@ -285,13 +323,14 @@ def train_stage1_gnn(
     config["data"]["n_val_objects"] = n_val_inst
     config["data"]["batch_unit"] = "instance"
     use_sam_cache = data_cfg.get("use_sam_embedding_cache", True)
-    if use_sam_cache and not sam_embeddings_dir().exists():
-        ctx.log(
-            "WARNING: SAM embedding cache missing (%s). Run P0.2 or set use_sam_embedding_cache=false.",
-            sam_embeddings_dir(),
-        )
-    elif use_sam_cache:
-        ctx.log("SAM embedding cache enabled (P0.2) — skips ViT-B encoder when npy exists")
+    if _main and ctx is not None:
+        if use_sam_cache and not sam_embeddings_dir().exists():
+            ctx.log(
+                "WARNING: SAM embedding cache missing (%s). Run P0.2 or set use_sam_embedding_cache=false.",
+                sam_embeddings_dir(),
+            )
+        elif use_sam_cache:
+            ctx.log("SAM embedding cache enabled (P0.2) — skips ViT-B encoder when npy exists")
 
     batch_size = training_cfg.get("batch_size", 4)  # instances per batch (not images)
     num_workers = data_cfg.get("num_workers", 4)
@@ -302,25 +341,27 @@ def train_stage1_gnn(
         num_workers = min(num_workers, 0)
         stage1_max_steps = smoke.stage1_max_steps
         max_epochs = min(max_epochs, smoke.stage1_epochs)
-    ctx.log(
-        "Stage-1 train: %d instances (%d images) from %s; batch_size=%d instances "
-        "(x3 weak signals = %d forward rows/batch)",
-        n_train_inst,
-        len(train_image_ids),
-        paths["train_txt"],
-        batch_size,
-        batch_size * 3,
-    )
-    ctx.log(
-        "Stage-1 val (early stop): %d instances (%d images) from %s (%s)",
-        n_val_inst,
-        len(val_image_ids),
-        paths["val_txt"],
-        val_spec["scope"],
-    )
-    ctx.save_config(config)
+    if _main:
+        ctx.log(
+            "Stage-1 train: %d instances (%d images) from %s; batch_size=%d instances/GPU "
+            "(x3 weak signals = %d forward rows/batch; world_size=%d)",
+            n_train_inst,
+            len(train_image_ids),
+            paths["train_txt"],
+            batch_size,
+            batch_size * 3,
+            _world,
+        )
+        ctx.log(
+            "Stage-1 val (early stop): %d instances (%d images) from %s (%s)",
+            n_val_inst,
+            len(val_image_ids),
+            paths["val_txt"],
+            val_spec["scope"],
+        )
+        ctx.save_config(config)
 
-    train_loader = DataLoader(
+    train_loader, train_sampler = build_stage1_dataloader(
         train_ds,
         batch_size=batch_size,
         shuffle=True,
@@ -329,16 +370,20 @@ def train_stage1_gnn(
         drop_last=True,
         collate_fn=collate_instance_triplets,
     )
-    val_loader = DataLoader(
+    val_loader, _val_sampler = build_stage1_dataloader(
         val_ds,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
         pin_memory=True,
+        drop_last=False,
         collate_fn=collate_instance_triplets,
     )
 
-    dev = resolve_device(prefer_cuda=device.startswith("cuda"))
+    if _world > 1 and torch.cuda.is_available():
+        dev = torch.device(f"cuda:{_rank}")
+    else:
+        dev = resolve_device(prefer_cuda=device.startswith("cuda"))
     sam_ckpt = sam_vit_b_checkpoint()
     if not sam_ckpt.exists():
         raise FileNotFoundError(f"Missing SAM weights: {sam_ckpt}")
@@ -352,7 +397,8 @@ def train_stage1_gnn(
     sam_predictor = get_sam_predictor(sam)
     pixel_mean, pixel_std = get_sam_pixel_stats(dev)
     refiner = build_sam_stage1_refiner(config).to(dev)
-    ctx.log("GNN params: %s", f"{count_parameters(refiner):,}")
+    if _main:
+        ctx.log("GNN params: %s", f"{count_parameters(refiner):,}")
 
     seg_criterion = CombinedSegLoss(
         bce_weight=training_cfg.get("bce_weight", 1.0),
@@ -382,20 +428,17 @@ def train_stage1_gnn(
         ),
         loss_warmup=loss_warmup,
     )
-    ctx.log(
-        "Stage-1 loss: BCE+Dice (3 heads) + 9-proposal KL/sym; warmup %d epochs "
-        "(kl %.2f->%.2f, sym %.2f->%.2f)",
-        loss_warmup.warmup_epochs,
-        loss_warmup.kl_start,
-        loss_warmup.kl_end,
-        loss_warmup.sym_start,
-        loss_warmup.sym_end,
-    )
-    optimizer = torch.optim.AdamW(
-        refiner.parameters(),
-        lr=training_cfg.get("lr", 1e-4),
-        weight_decay=training_cfg.get("weight_decay", 1e-4),
-    )
+    if _main:
+        ctx.log(
+            "Stage-1 loss: BCE+Dice (3 heads) + 9-proposal KL/sym; warmup %d epochs "
+            "(kl %.2f->%.2f, sym %.2f->%.2f)",
+            loss_warmup.warmup_epochs,
+            loss_warmup.kl_start,
+            loss_warmup.kl_end,
+            loss_warmup.sym_start,
+            loss_warmup.sym_end,
+        )
+
     start_epoch = 1
     history = []
     best_val_ap = -1.0
@@ -407,28 +450,47 @@ def train_stage1_gnn(
         mode=es_cfg.get("mode", "max"),
     )
     save_every = training_cfg.get("save_every_epochs", 1)
-
     legacy_ckpt = checkpoints_dir() / output_name
 
+    resume_ckpt = None
     if resume:
-        ckpt = ctx.load_checkpoint()
-        if ckpt:
-            if ckpt.get("wssis_ckpt_version", 1) < 3:
+        ckpt_path = ckpt_dir / "last.pt"
+        if ckpt_path.exists():
+            resume_ckpt = torch.load(ckpt_path, map_location=dev, weights_only=False)
+        elif _main and ctx is not None:
+            resume_ckpt = ctx.load_checkpoint()
+        if resume_ckpt:
+            if resume_ckpt.get("wssis_ckpt_version", 1) < 3:
                 raise RuntimeError(
                     "Checkpoint is pre-GNN-v2 (wssis_ckpt_version < 3). Re-run P0.4 for wssis_v2."
                 )
-            refiner.load_state_dict(ckpt["state_dict"], strict=False)
-            if "optimizer" in ckpt:
-                optimizer.load_state_dict(ckpt["optimizer"])
-            start_epoch = ckpt.get("epoch", 0) + 1
-            history = ckpt.get("history", [])
-            best_val_ap = ckpt.get("best_val_refined_ap", ckpt.get("best_val_iou", best_val_ap))
-            early_stop.best = ckpt.get("early_stop_best")
-            early_stop.counter = ckpt.get("early_stop_counter", 0)
+            refiner.load_state_dict(resume_ckpt["state_dict"], strict=False)
+            start_epoch = resume_ckpt.get("epoch", 0) + 1
+            history = resume_ckpt.get("history", [])
+            best_val_ap = resume_ckpt.get(
+                "best_val_refined_ap", resume_ckpt.get("best_val_iou", best_val_ap)
+            )
+            early_stop.best = resume_ckpt.get("early_stop_best")
+            early_stop.counter = resume_ckpt.get("early_stop_counter", 0)
             _pl_cfg = config.get("pseudo_label") or {}
             if "freematch_time_p" in _pl_cfg:
                 threshold_policy._time_p = float(_pl_cfg["freematch_time_p"])
-            ctx.log("Resumed at epoch %d (best_val_refined_ap=%.4f)", start_epoch, best_val_ap)
+            if _main:
+                ctx.log(
+                    "Resumed at epoch %d (best_val_refined_ap=%.4f)",
+                    start_epoch,
+                    best_val_ap,
+                )
+
+    refiner = wrap_stage1_refiner(refiner, _rank)
+    optimizer = torch.optim.AdamW(
+        refiner.parameters(),
+        lr=training_cfg.get("lr", 1e-4),
+        weight_decay=training_cfg.get("weight_decay", 1e-4),
+    )
+    if resume_ckpt and "optimizer" in resume_ckpt:
+        optimizer.load_state_dict(resume_ckpt["optimizer"])
+    barrier()
 
     viz_cfg = config.get("visualization", {})
     viz_enabled = viz_cfg.get("enabled", True)
@@ -442,8 +504,11 @@ def train_stage1_gnn(
         range(start_epoch, max_epochs + 1),
         desc="Stage-1 GNN",
         unit="epoch",
+        disable=not _main,
     )
     for epoch in epoch_pbar:
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
         t0 = time.perf_counter()
         if torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats(dev)
@@ -461,6 +526,7 @@ def train_stage1_gnn(
             desc=f"Epoch {epoch}/{max_epochs} train",
             leave=False,
             unit="batch",
+            disable=not _main,
         )
         for images, masks, meta in train_pbar:
             images, masks = images.to(dev), masks.to(dev)
@@ -526,7 +592,7 @@ def train_stage1_gnn(
             torch.cuda.empty_cache()
 
         train_mean = _mean_losses(train_totals, n_batches)
-        if n_batches and use_sam_cache:
+        if _main and ctx is not None and n_batches and use_sam_cache:
             ctx.log(
                 "epoch %d SAM cache: hits=%d misses=%d unique_images=%d",
                 epoch,
@@ -535,62 +601,80 @@ def train_stage1_gnn(
                 cache_epoch["unique_images"],
             )
 
-        refiner.eval()
-        val_totals = _loss_totals_template(with_sym=False)
-        vn = 0
+        val_mean = _mean_losses(_loss_totals_template(with_sym=False), 0)
+        val_metrics = {
+            "refined_iou": 0.0,
+            "raw_sam_iou": 0.0,
+            "delta_iou": 0.0,
+            "raw_sam_ap": 0.0,
+            "refined_ap": 0.0,
+            "delta_ap": 0.0,
+            "raw_sam_ap50": 0.0,
+            "refined_ap50": 0.0,
+            "delta_ap50": 0.0,
+        }
         val_over_thresh_sum = 0.0
         val_agreement_sum = 0.0
         val_effective_thresh_sum = 0.0
-        tracker = RefinementMetricTracker()
-        val_pbar = tqdm(
-            val_loader,
-            desc=f"Epoch {epoch}/{max_epochs} val",
-            leave=False,
-            unit="batch",
-        )
-        with torch.no_grad():
-            for images, masks, meta in val_pbar:
-                images, masks = images.to(dev), masks.to(dev)
-                logits, sam_masks_3, sam_scores, gt, _, _ = _stage1_forward_batch(
-                    sam,
-                    refiner,
-                    images,
-                    masks,
-                    pixel_mean,
-                    pixel_std,
-                    mask_size,
-                    prompt_policy_val,
-                    metas=meta,
-                    use_sam_cache=use_sam_cache,
-                    sam_predictor=sam_predictor,
-                )
-                comps = _loss_components(seg_criterion, logits, gt)
-                _accumulate_losses(val_totals, comps)
-                vn += 1
-                tracker.update(sam_masks_3, sam_scores, logits, gt)
-                val_effective_thresh_sum += threshold_policy.effective_threshold(
-                    logits, update=False
-                )
-                val_over_thresh_sum += over_threshold_ratio(
-                    logits, threshold_policy=threshold_policy, update=False
-                )
-                val_agreement_sum += agreement_rate(
-                    logits, threshold_policy=threshold_policy, update=False
-                )
-                val_pbar.set_postfix(
-                    total=f"{comps['total']:.4f}",
-                    bce_w=f"{comps['bce_weighted']:.4f}",
-                    dice_w=f"{comps['dice_weighted']:.4f}",
-                )
-                del logits, sam_masks_3, sam_scores, gt, images, masks, meta, comps
+        vn = 0
+
+        if _main:
+            refiner.eval()
+            val_totals = _loss_totals_template(with_sym=False)
+            tracker = RefinementMetricTracker()
+            val_pbar = tqdm(
+                val_loader,
+                desc=f"Epoch {epoch}/{max_epochs} val",
+                leave=False,
+                unit="batch",
+            )
+            with torch.no_grad():
+                for images, masks, meta in val_pbar:
+                    images, masks = images.to(dev), masks.to(dev)
+                    logits, sam_masks_3, sam_scores, gt, _, _ = _stage1_forward_batch(
+                        sam,
+                        refiner,
+                        images,
+                        masks,
+                        pixel_mean,
+                        pixel_std,
+                        mask_size,
+                        prompt_policy_val,
+                        metas=meta,
+                        use_sam_cache=use_sam_cache,
+                        sam_predictor=sam_predictor,
+                    )
+                    comps = _loss_components(seg_criterion, logits, gt)
+                    _accumulate_losses(val_totals, comps)
+                    vn += 1
+                    tracker.update(sam_masks_3, sam_scores, logits, gt)
+                    val_effective_thresh_sum += threshold_policy.effective_threshold(
+                        logits, update=False
+                    )
+                    val_over_thresh_sum += over_threshold_ratio(
+                        logits, threshold_policy=threshold_policy, update=False
+                    )
+                    val_agreement_sum += agreement_rate(
+                        logits, threshold_policy=threshold_policy, update=False
+                    )
+                    val_pbar.set_postfix(
+                        total=f"{comps['total']:.4f}",
+                        bce_w=f"{comps['bce_weighted']:.4f}",
+                        dice_w=f"{comps['dice_weighted']:.4f}",
+                    )
+                    del logits, sam_masks_3, sam_scores, gt, images, masks, meta, comps
+            val_mean = _mean_losses(val_totals, vn)
+            val_metrics = tracker.compute()
+
         clear_sam_predictor(sam)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        val_mean = _mean_losses(val_totals, vn)
+        barrier()
 
-        val_metrics = tracker.compute()
         epoch_time = time.perf_counter() - t0
-        row = {
+        stop_flag = False
+        if _main:
+            row = {
             "epoch": epoch,
             "phase": "train",
             **_prefix_loss_metrics(train_mean, "train"),
@@ -629,64 +713,93 @@ def train_stage1_gnn(
                 f"loss_{k}": v
                 for k, v in loss_warmup.weights_for_epoch(epoch).items()
             },
-        }
-        history.append(row)
-        ctx.log_metrics(row, step=epoch)
-        ctx.log(
-            "epoch %d train_total=%.4f (bce_w=%.4f dice_w=%.4f sym_w=%.4f) "
-            "val_total=%.4f raw_AP=%.4f refined_AP=%.4f delta_AP=%+.4f time=%.1fs",
-            epoch,
-            row["train_loss"],
-            row["train_bce_weighted"],
-            row["train_dice_weighted"],
-            row["train_sym_weighted"],
-            row["val_loss"],
-            row["raw_sam_ap"],
-            row["val_refined_ap"],
-            row["delta_ap"],
-            epoch_time,
-        )
-        ctx.update_step(
-            "stage1_gnn",
-            {
-                "status": "running",
+            }
+            history.append(row)
+            ctx.log_metrics(row, step=epoch)
+            ctx.log(
+                "epoch %d train_total=%.4f (bce_w=%.4f dice_w=%.4f sym_w=%.4f) "
+                "val_total=%.4f raw_AP=%.4f refined_AP=%.4f delta_AP=%+.4f time=%.1fs",
+                epoch,
+                row["train_loss"],
+                row["train_bce_weighted"],
+                row["train_dice_weighted"],
+                row["train_sym_weighted"],
+                row["val_loss"],
+                row["raw_sam_ap"],
+                row["val_refined_ap"],
+                row["delta_ap"],
+                epoch_time,
+            )
+            ctx.update_step(
+                "stage1_gnn",
+                {
+                    "status": "running",
+                    "epoch": epoch,
+                    "max_epochs": max_epochs,
+                    "val_refined_ap": row["val_refined_ap"],
+                    "delta_ap": row["delta_ap"],
+                },
+            )
+
+            is_best = row["val_refined_ap"] > best_val_ap
+            if is_best:
+                best_val_ap = row["val_refined_ap"]
+
+            pl_state = threshold_policy.state_dict()
+            config.setdefault("pseudo_label", {})["freematch_time_p"] = pl_state.get(
+                "time_p"
+            )
+            payload = {
                 "epoch": epoch,
-                "max_epochs": max_epochs,
-                "val_refined_ap": row["val_refined_ap"],
-                "delta_ap": row["delta_ap"],
-            },
-        )
+                "config": config,
+                "state_dict": state_dict_for_save(refiner),
+                "optimizer": optimizer.state_dict(),
+                "history": history,
+                "best_val_refined_ap": best_val_ap,
+                "early_stop_best": early_stop.best,
+                "early_stop_counter": early_stop.counter,
+                "wssis_ckpt_version": 3,
+                "sample_unit": "instance",
+            }
+            ctx.save_checkpoint(
+                payload,
+                "last.pt",
+                copy_to_legacy=legacy_ckpt if epoch == max_epochs else None,
+            )
+            if is_best:
+                ctx.save_checkpoint(payload, "best.pt", copy_to_legacy=legacy_ckpt)
+            if save_every and epoch % save_every == 0:
+                ctx.save_checkpoint(payload, f"epoch_{epoch:03d}.pt")
 
-        is_best = row["val_refined_ap"] > best_val_ap
-        if is_best:
-            best_val_ap = row["val_refined_ap"]
+            if early_stop.patience > 0 and early_stop.step(row):
+                ctx.log(
+                    "EarlyStopping: new best %s=%.4f",
+                    early_stop.monitor,
+                    early_stop.best,
+                )
+            stop_flag = early_stop.should_stop
+            if stop_flag:
+                ctx.log(
+                    "Early stopping at epoch %d (patience=%d)",
+                    epoch,
+                    early_stop.patience,
+                )
 
-        pl_state = threshold_policy.state_dict()
-        config.setdefault("pseudo_label", {})["freematch_time_p"] = pl_state.get("time_p")
-        payload = {
-            "epoch": epoch,
-            "config": config,
-            "state_dict": refiner.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "history": history,
-            "best_val_refined_ap": best_val_ap,
-            "early_stop_best": early_stop.best,
-            "early_stop_counter": early_stop.counter,
-            "wssis_ckpt_version": 3,
-            "sample_unit": "instance",
-        }
-        ctx.save_checkpoint(payload, "last.pt", copy_to_legacy=legacy_ckpt if epoch == max_epochs else None)
-        if is_best:
-            ctx.save_checkpoint(payload, "best.pt", copy_to_legacy=legacy_ckpt)
-        if save_every and epoch % save_every == 0:
-            ctx.save_checkpoint(payload, f"epoch_{epoch:03d}.pt")
+        if _world > 1:
+            import torch.distributed as dist
 
-        if viz_enabled:
+            stop_t = torch.tensor([int(stop_flag)], device=dev, dtype=torch.long)
+            dist.broadcast(stop_t, src=0)
+            stop_flag = bool(stop_t.item())
+        if stop_flag:
+            break
+
+        if _main and viz_enabled:
             visualize_stage1_epoch(
                 epoch=epoch,
                 dataset=val_ds,
                 sam_model=sam,
-                refiner=refiner,
+                refiner=unwrap_refiner(refiner),
                 pixel_mean=pixel_mean,
                 pixel_std=pixel_std,
                 device=dev,
@@ -697,18 +810,17 @@ def train_stage1_gnn(
                 threshold_policy=threshold_policy,
             )
 
-        epoch_pbar.set_postfix(
-            train_loss=f"{row['train_loss']:.4f}",
-            refined_AP=f"{row['val_refined_ap']:.4f}",
-            delta_AP=f"{row['delta_ap']:+.4f}",
-        )
+        if _main:
+            epoch_pbar.set_postfix(
+                train_loss=f"{row['train_loss']:.4f}",
+                refined_AP=f"{row['val_refined_ap']:.4f}",
+                delta_AP=f"{row['delta_ap']:+.4f}",
+            )
 
-        improved = early_stop.step(row)
-        if early_stop.patience > 0 and improved:
-            ctx.log("EarlyStopping: new best %s=%.4f", early_stop.monitor, early_stop.best)
-        if early_stop.should_stop:
-            ctx.log("Early stopping at epoch %d (patience=%d)", epoch, early_stop.patience)
-            break
+    barrier()
+
+    if not _main:
+        return legacy_ckpt
 
     history_path = ctx.logs_dir / "metrics_history.json"
     import json

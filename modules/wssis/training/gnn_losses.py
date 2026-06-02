@@ -107,17 +107,29 @@ def hungarian_match_perm(cost: torch.Tensor) -> torch.Tensor:
         return perm
 
 
+def align_three_heads_pair(
+    anchor_sam: torch.Tensor,
+    other_sam: torch.Tensor,
+    other_refined: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Align ``other`` to ``anchor`` using IoU on SAM masks.
+
+    Returns (permuted other_sam, permuted other_refined), each [3,H,W].
+    """
+    cost = _pairwise_iou_cost(anchor_sam.detach(), other_sam.detach())
+    perm = hungarian_match_perm(cost)
+    return other_sam[perm], other_refined[perm]
+
+
 def align_three_heads(
     anchor_sam: torch.Tensor,
     other_sam: torch.Tensor,
     other_refined: torch.Tensor,
 ) -> torch.Tensor:
-    """
-    Align ``other`` to ``anchor`` using IoU on SAM masks; return permuted refined [3,H,W].
-    """
-    cost = _pairwise_iou_cost(anchor_sam.detach(), other_sam.detach())
-    perm = hungarian_match_perm(cost)
-    return other_refined[perm]
+    """Return permuted refined [3,H,W] only (legacy helper)."""
+    _, other_refined = align_three_heads_pair(anchor_sam, other_sam, other_refined)
+    return other_refined
 
 
 def supervised_seg_loss(
@@ -167,8 +179,8 @@ def nine_aligned_proposal_loss(
         ss = sam_masks_3[is_].float().clamp(0.0, 1.0)
         sp = sam_masks_3[ip].float().clamp(0.0, 1.0)
 
-        rs_a = align_three_heads(sb, ss, rs)
-        rp_a = align_three_heads(rs_a, sp, rp)
+        ss_a, rs_a = align_three_heads_pair(sb, ss, rs)
+        _, rp_a = align_three_heads_pair(ss_a, sp, rp)
 
         pb = torch.sigmoid(rb)
         ps = torch.sigmoid(rs_a)

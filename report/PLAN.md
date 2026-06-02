@@ -18,6 +18,8 @@ Archived ablations (1B, 2A–2C, 3A–3C): see [ARCHIVED_EXPERIMENTS.md](ARCHIVE
 
 **Stage-2 GNN default for 1C/4A:** `FREEZE_GNN=false` (GNN fine-tuned jointly with student unless overridden).
 
+**Stage-1 SAM multimask alignment:** Hungarian matching of 3×3 heads across box → scribble → point before KL/sym losses — see [STAGE1_ALIGNMENT.md](STAGE1_ALIGNMENT.md).
+
 <details>
 <summary>Legacy full registry table (archived IDs)</summary>
 

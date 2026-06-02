@@ -163,13 +163,36 @@ def run(
 
     cfg["run_final_eval"] = run_final_eval
 
-    out = train_stage1_gnn(
-        cfg,
-        device=device,
-        output_name=output_name,
-        run_ctx=ctx,
-        resume=resume,
+    from modules.wssis.stage1_distributed import resolve_stage1_num_gpus
+    from modules.wssis.stage1_launch import launch
+
+    num_gpus = resolve_stage1_num_gpus(
+        cfg.get("num_gpus") or (config_overrides or {}).get("num_gpus")
     )
+    if num_gpus > 1:
+        cfg["num_gpus"] = num_gpus
+
+        def _worker(local_rank: int, world_size: int) -> None:
+            train_stage1_gnn(
+                cfg,
+                device=device,
+                output_name=output_name,
+                run_ctx=ctx if local_rank == 0 else None,
+                resume=resume,
+                local_rank=local_rank,
+                world_size=world_size,
+            )
+
+        launch(_worker, num_gpus)
+        out = checkpoints_dir() / output_name
+    else:
+        out = train_stage1_gnn(
+            cfg,
+            device=device,
+            output_name=output_name,
+            run_ctx=ctx,
+            resume=resume,
+        )
 
     print(f"[P0.4] Saved checkpoint: {out}")
     print(f"[P0.4] Run bundle: {ctx.root}")
@@ -203,6 +226,12 @@ def main() -> None:
     )
     parser.add_argument("--output-name", default="gnn_refiner_stage1_v2.pt")
     parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--num-gpus",
+        type=int,
+        default=None,
+        help="GPUs for DDP (default: WSSIS_NUM_GPUS or torch.cuda.device_count())",
+    )
     parser.add_argument("--no-viz", action="store_true")
     parser.add_argument("--viz-samples", type=int, default=4)
     parser.add_argument("--run-id", default=None, help="Run folder name under outputs/runs/")
@@ -242,6 +271,8 @@ def main() -> None:
             pl["confidence_threshold"] = float(args.pseudo_confidence_threshold)
         if args.pseudo_threshold_mode is not None:
             pl["threshold_mode"] = args.pseudo_threshold_mode
+    if args.num_gpus is not None:
+        overrides["num_gpus"] = args.num_gpus
 
     run(
         epochs=args.epochs,
