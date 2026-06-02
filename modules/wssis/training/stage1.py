@@ -192,11 +192,14 @@ def train_stage1_gnn(
     signal_type = training_cfg.get("weak_signal", "mixed")
     from modules.wssis.pseudo_label_confidence import (
         agreement_rate,
+        build_threshold_policy,
         over_threshold_ratio,
-        resolve_pseudo_confidence_threshold,
     )
 
-    pseudo_conf_thresh = resolve_pseudo_confidence_threshold(config)
+    threshold_policy = build_threshold_policy(config)
+    _pl_cfg = config.get("pseudo_label") or {}
+    if "freematch_time_p" in _pl_cfg:
+        threshold_policy._time_p = float(_pl_cfg["freematch_time_p"])
 
     ctx = run_ctx or RunContext(
         run_id=config.get("run_id"),
@@ -375,6 +378,9 @@ def train_stage1_gnn(
             best_val_ap = ckpt.get("best_val_refined_ap", ckpt.get("best_val_iou", best_val_ap))
             early_stop.best = ckpt.get("early_stop_best")
             early_stop.counter = ckpt.get("early_stop_counter", 0)
+            _pl_cfg = config.get("pseudo_label") or {}
+            if "freematch_time_p" in _pl_cfg:
+                threshold_policy._time_p = float(_pl_cfg["freematch_time_p"])
             ctx.log("Resumed at epoch %d (best_val_refined_ap=%.4f)", start_epoch, best_val_ap)
 
     viz_cfg = config.get("visualization", {})
@@ -400,6 +406,7 @@ def train_stage1_gnn(
         n_batches = 0
         train_over_thresh_sum = 0.0
         train_agreement_sum = 0.0
+        train_effective_thresh_sum = 0.0
         cache_epoch = {"cache_hits": 0, "cache_misses": 0, "unique_images": 0}
 
         train_pbar = tqdm(
@@ -448,10 +455,15 @@ def train_stage1_gnn(
             _accumulate_losses(train_totals, comps)
             n_batches += 1
             with torch.no_grad():
-                train_over_thresh_sum += over_threshold_ratio(
-                    logits, pseudo_conf_thresh
+                train_effective_thresh_sum += threshold_policy.effective_threshold(
+                    logits, update=True
                 )
-                train_agreement_sum += agreement_rate(logits, pseudo_conf_thresh)
+                train_over_thresh_sum += over_threshold_ratio(
+                    logits, threshold_policy=threshold_policy, update=False
+                )
+                train_agreement_sum += agreement_rate(
+                    logits, threshold_policy=threshold_policy, update=False
+                )
             train_pbar.set_postfix(
                 total=f"{comps['total']:.4f}",
                 seg=f"{comps['seg_weighted']:.4f}",
@@ -480,6 +492,7 @@ def train_stage1_gnn(
         vn = 0
         val_over_thresh_sum = 0.0
         val_agreement_sum = 0.0
+        val_effective_thresh_sum = 0.0
         tracker = RefinementMetricTracker()
         val_pbar = tqdm(
             val_loader,
@@ -509,8 +522,15 @@ def train_stage1_gnn(
                 _accumulate_losses(val_totals, comps)
                 vn += 1
                 tracker.update(sam_masks_3, sam_scores, logits, masks)
-                val_over_thresh_sum += over_threshold_ratio(logits, pseudo_conf_thresh)
-                val_agreement_sum += agreement_rate(logits, pseudo_conf_thresh)
+                val_effective_thresh_sum += threshold_policy.effective_threshold(
+                    logits, update=False
+                )
+                val_over_thresh_sum += over_threshold_ratio(
+                    logits, threshold_policy=threshold_policy, update=False
+                )
+                val_agreement_sum += agreement_rate(
+                    logits, threshold_policy=threshold_policy, update=False
+                )
                 val_pbar.set_postfix(
                     total=f"{comps['total']:.4f}",
                     bce_w=f"{comps['bce_weighted']:.4f}",
@@ -549,7 +569,12 @@ def train_stage1_gnn(
             "delta_ap50": val_metrics["delta_ap50"],
             "epoch_time_s": epoch_time,
             "gpu_mem_mb": gpu_memory_mb(),
-            "pseudo_confidence_threshold": pseudo_conf_thresh,
+            "pseudo_threshold_mode": threshold_policy.mode,
+            "pseudo_confidence_threshold": threshold_policy.p_cutoff,
+            "train_effective_pseudo_threshold": train_effective_thresh_sum / max(
+                n_batches, 1
+            ),
+            "val_effective_pseudo_threshold": val_effective_thresh_sum / max(vn, 1),
             "train_over_threshold_ratio": train_over_thresh_sum / max(n_batches, 1),
             "val_over_threshold_ratio": val_over_thresh_sum / max(vn, 1),
             "train_agreement_rate": train_agreement_sum / max(n_batches, 1),
@@ -586,6 +611,8 @@ def train_stage1_gnn(
         if is_best:
             best_val_ap = row["val_refined_ap"]
 
+        pl_state = threshold_policy.state_dict()
+        config.setdefault("pseudo_label", {})["freematch_time_p"] = pl_state.get("time_p")
         payload = {
             "epoch": epoch,
             "config": config,
@@ -617,7 +644,7 @@ def train_stage1_gnn(
                 num_samples=viz_samples,
                 policy=prompt_policy_val,
                 use_sam_cache=use_sam_cache,
-                pseudo_confidence_threshold=pseudo_conf_thresh,
+                threshold_policy=threshold_policy,
             )
 
         epoch_pbar.set_postfix(

@@ -278,9 +278,10 @@ def symmetric_loss(refined_masks):
     loss_13 = F.mse_loss(m1, m3)
     return (loss_12 + loss_23 + loss_13) / 3.0
 
-def generate_pseudo_label(refined_masks_logits, confidence_threshold=0.5):
+def generate_pseudo_label(refined_masks_logits, policy):
+    thresh = policy.effective_threshold(refined_masks_logits)  # fixed | adamatch | freematch
     probs = torch.sigmoid(refined_masks_logits)
-    binary_masks = (probs > confidence_threshold).float()  # high-confidence heads only
+    binary_masks = (probs > thresh).float()
     votes = torch.sum(binary_masks, dim=1, keepdim=True)
     agreed_mask = (votes >= 2).float()
     pseudo_gt = F.interpolate(agreed_mask, size=(640, 640), mode='nearest')
@@ -379,7 +380,7 @@ Every experiment reads:
 
 **During training:** sup/semi/distill losses, GNN sym/partial-ce, `over_threshold_ratio` (mean pixel fraction above `pseudo_label.confidence_threshold` per batch), agreement rate (≥2/3 heads above threshold), GPU mem, time/epoch.
 
-**Config hook:** `pseudo_label.confidence_threshold` in Stage-1 `config.json` / checkpoint; Stage-2 reads `WSSIS.PSEUDO_CONFIDENCE_THRESHOLD` from experiment YAML (copied from GNN ckpt when generating overrides).
+**Config hook:** `pseudo_label.threshold_mode` (`fixed` | `adamatch` | `freematch`) and `pseudo_label.confidence_threshold` (default **0.9**; AdaMatch multiplier when mode is `adamatch`). Stage-2 YAML: `WSSIS.PSEUDO_THRESHOLD_MODE` + `WSSIS.PSEUDO_CONFIDENCE_THRESHOLD` (from GNN ckpt).
 
 **After training:** AP, AP50, AP75, AP_S/M/L; refinement pipeline grid; failure cases (3–5 images); optional t-SNE of stride-16 features.
 

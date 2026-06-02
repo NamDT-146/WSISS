@@ -15,8 +15,8 @@ from modules.vig_refinenet.sam_stage1_common import (
     load_sam_vit_b,
 )
 from modules.wssis.pseudo_label_confidence import (
-    DEFAULT_PSEUDO_CONFIDENCE_THRESHOLD,
-    resolve_pseudo_confidence_threshold,
+    PseudoThresholdPolicy,
+    build_threshold_policy,
 )
 from modules.vig_refinenet.sam_stage1_refiner import build_sam_stage1_refiner
 from modules.wssis.paths import gnn_checkpoint, sam_vit_b_checkpoint
@@ -34,12 +34,14 @@ class WssisTeacherStack(nn.Module):
         freeze_gnn: bool = False,
         mask_size: int = 256,
         pseudo_confidence_threshold: float | None = None,
+        threshold_policy: PseudoThresholdPolicy | None = None,
+        pseudo_label_config: dict | None = None,
     ):
         super().__init__()
         self.device = device
         self.use_gnn = use_gnn
         self.mask_size = mask_size
-        self.pseudo_confidence_threshold = DEFAULT_PSEUDO_CONFIDENCE_THRESHOLD
+        ckpt_run_config: dict | None = None
         sam_path = sam_vit_b_checkpoint()
         self.sam = load_sam_vit_b(str(sam_path), device)
         self.pixel_mean, self.pixel_std = get_sam_pixel_stats(device)
@@ -58,20 +60,34 @@ class WssisTeacherStack(nn.Module):
             state = torch.load(ckpt, map_location=device, weights_only=False)
             sd = state.get("state_dict", state)
             self.gnn.load_state_dict(sd, strict=False)
-            ckpt_thresh = resolve_pseudo_confidence_threshold(state.get("config"))
-            self.pseudo_confidence_threshold = (
-                float(pseudo_confidence_threshold)
-                if pseudo_confidence_threshold is not None
-                else ckpt_thresh
-            )
+            ckpt_run_config = state.get("config")
             if freeze_gnn:
                 for p in self.gnn.parameters():
                     p.requires_grad = False
             else:
                 for p in self.gnn.parameters():
                     p.requires_grad = True
-        elif pseudo_confidence_threshold is not None:
-            self.pseudo_confidence_threshold = float(pseudo_confidence_threshold)
+        if threshold_policy is not None:
+            self.threshold_policy = threshold_policy
+        else:
+            run_cfg = dict(ckpt_run_config or {})
+            if pseudo_label_config:
+                run_cfg["pseudo_label"] = {
+                    **(run_cfg.get("pseudo_label") or {}),
+                    **pseudo_label_config,
+                }
+            self.threshold_policy = build_threshold_policy(
+                run_cfg or None,
+                confidence_threshold=pseudo_confidence_threshold,
+            )
+            t_p = (run_cfg.get("pseudo_label") or {}).get("freematch_time_p")
+            if t_p is not None:
+                self.threshold_policy._time_p = float(t_p)
+
+    @property
+    def pseudo_confidence_threshold(self) -> float:
+        """``p_cutoff`` / fixed cutoff (for logging and YAML)."""
+        return self.threshold_policy.p_cutoff
 
     @torch.no_grad()
     def generate_pseudo_for_image(
@@ -83,6 +99,7 @@ class WssisTeacherStack(nn.Module):
         prompt_policy: str = "train_online",
         signal_type: str = "mixed",
         use_sam_cache: bool = True,
+        reference_logits: torch.Tensor | None = None,
     ) -> Tuple[List[np.ndarray], List[int]]:
         """
         Returns list of binary pseudo masks (H,W) and category_ids (0 if unknown).
@@ -115,7 +132,7 @@ class WssisTeacherStack(nn.Module):
             signal_type=signal_type,
             use_gnn=self.use_gnn,
             use_sam_cache=use_sam_cache,
-            confidence_threshold=self.pseudo_confidence_threshold,
+            threshold_policy=self.threshold_policy,
         )
         out_masks = []
         for i in range(pseudo.shape[0]):

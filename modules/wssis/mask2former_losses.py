@@ -35,6 +35,9 @@ def feature_distillation_loss(
 def agreement_rate(
     refined_logits: torch.Tensor,
     confidence_threshold: float | None = None,
+    *,
+    threshold_policy=None,
+    update: bool = False,
 ) -> float:
     """Fraction of spatial locations with >=2/3 mask agreement above threshold."""
     from modules.wssis.pseudo_label_confidence import (
@@ -42,6 +45,12 @@ def agreement_rate(
         agreement_rate as _agreement_rate,
     )
 
+    if threshold_policy is not None:
+        return _agreement_rate(
+            refined_logits,
+            threshold_policy=threshold_policy,
+            update=update,
+        )
     thresh = (
         DEFAULT_PSEUDO_CONFIDENCE_THRESHOLD
         if confidence_threshold is None

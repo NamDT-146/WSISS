@@ -70,7 +70,14 @@ def _build_config(
         "use_symmetric_loss": True,
         "run_final_eval": True,
         "pseudo_label": {
-            "confidence_threshold": 0.5,
+            "threshold_mode": "fixed",
+            "confidence_threshold": 0.9,
+            "freematch": {
+                "ema_momentum": 0.999,
+                "use_quantile": True,
+                "quantile": 0.8,
+                "clip_max": 0.95,
+            },
         },
         "visualization": {
             "enabled": True,
@@ -178,7 +185,13 @@ def main() -> None:
         "--pseudo-confidence-threshold",
         type=float,
         default=None,
-        help="Min sigmoid prob per GNN head for pseudo-label voting (default: 0.5)",
+        help="Fixed cutoff or AdaMatch p_cutoff multiplier (default: 0.9)",
+    )
+    parser.add_argument(
+        "--pseudo-threshold-mode",
+        choices=("fixed", "adamatch", "freematch"),
+        default=None,
+        help="Pseudo-label threshold: fixed (FixMatch), adamatch (batch-relative), freematch (EMA)",
     )
     args = parser.parse_args()
 
@@ -189,10 +202,12 @@ def main() -> None:
         overrides["visualization"] = {"enabled": True, "num_samples": args.viz_samples}
     if args.no_early_stop:
         overrides["early_stopping"] = {"patience": 0}
-    if args.pseudo_confidence_threshold is not None:
-        overrides["pseudo_label"] = {
-            "confidence_threshold": float(args.pseudo_confidence_threshold),
-        }
+    if args.pseudo_confidence_threshold is not None or args.pseudo_threshold_mode is not None:
+        pl = overrides.setdefault("pseudo_label", {})
+        if args.pseudo_confidence_threshold is not None:
+            pl["confidence_threshold"] = float(args.pseudo_confidence_threshold)
+        if args.pseudo_threshold_mode is not None:
+            pl["threshold_mode"] = args.pseudo_threshold_mode
 
     run(
         epochs=args.epochs,

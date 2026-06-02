@@ -238,6 +238,9 @@ def generate_pseudo_label_from_logits(
     *,
     confidence_threshold: Optional[float] = None,
     vote_min: int = 2,
+    threshold_policy=None,
+    reference_logits: Optional[torch.Tensor] = None,
+    update: bool = True,
 ) -> torch.Tensor:
     """
     2/3 vote agreement on 3 refined mask heads (thresholded per head).
@@ -249,6 +252,15 @@ def generate_pseudo_label_from_logits(
         generate_pseudo_label_from_logits as _generate_pseudo,
     )
 
+    if threshold_policy is not None:
+        return _generate_pseudo(
+            refined_masks_logits,
+            target_size,
+            vote_min=vote_min,
+            threshold_policy=threshold_policy,
+            reference_logits=reference_logits,
+            update=update,
+        )
     thresh = (
         DEFAULT_PSEUDO_CONFIDENCE_THRESHOLD
         if confidence_threshold is None
@@ -278,6 +290,7 @@ def forward_teacher_objects(
     use_gnn: bool = True,
     use_sam_cache: bool = True,
     confidence_threshold: Optional[float] = None,
+    threshold_policy=None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Teacher forward for one image with N objects.
@@ -344,6 +357,7 @@ def forward_teacher_objects(
         refined_logits,
         target_size=(mask_size, mask_size),
         confidence_threshold=confidence_threshold,
+        threshold_policy=threshold_policy,
     )
     raw_best = _best_mask_by_score(sam_masks_3, sam_scores)
     return pseudo, raw_best, refined_logits

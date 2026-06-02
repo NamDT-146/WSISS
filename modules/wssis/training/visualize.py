@@ -135,7 +135,7 @@ def gnn_mask_from_inputs(
     target_hw: Tuple[int, int],
     mask_size: int = 256,
     use_cache: bool = True,
-    confidence_threshold: float | None = None,
+    threshold_policy=None,
 ) -> np.ndarray:
     """GNN refined mask at original image resolution (PLAN §2 pipeline)."""
     from modules.vig_refinenet.sam_stage1_common import (
@@ -179,7 +179,8 @@ def gnn_mask_from_inputs(
         pseudo = generate_pseudo_label_from_logits(
             logits,
             target_size=target_hw,
-            confidence_threshold=confidence_threshold,
+            threshold_policy=threshold_policy,
+            update=False,
         )
     return pseudo[0, 0].cpu().numpy() > 0
 
@@ -223,7 +224,7 @@ def visualize_stage1_epoch(
     num_samples: int = 4,
     policy: str = "val_fixed",
     use_sam_cache: bool = True,
-    pseudo_confidence_threshold: float | None = None,
+    threshold_policy=None,
 ) -> Path:
     """
     Save 1×5 refinement grids for fixed val samples after each epoch.
@@ -306,7 +307,7 @@ def visualize_stage1_epoch(
                 target_hw=(h, w),
                 mask_size=256,
                 use_cache=use_sam_cache,
-                confidence_threshold=pseudo_confidence_threshold,
+                threshold_policy=threshold_policy,
             )
 
             gt_mask = mask_np > 0

@@ -196,15 +196,25 @@ class Trainer(DefaultTrainer):
                 else:
                     device = torch.device("cpu")
                 gnn_path = getattr(cfg.WSSIS, "GNN_CHECKPOINT", "") or None
-                pseudo_thresh = float(
-                    getattr(cfg.WSSIS, "PSEUDO_CONFIDENCE_THRESHOLD", 0.5)
-                )
+                from modules.wssis.pseudo_label_confidence import build_threshold_policy
+
+                pseudo_cfg = {
+                    "pseudo_label": {
+                        "threshold_mode": str(
+                            getattr(cfg.WSSIS, "PSEUDO_THRESHOLD_MODE", "fixed")
+                        ),
+                        "confidence_threshold": float(
+                            getattr(cfg.WSSIS, "PSEUDO_CONFIDENCE_THRESHOLD", 0.9)
+                        ),
+                    }
+                }
+                threshold_policy = build_threshold_policy(pseudo_cfg)
                 teacher = WssisTeacherStack(
                     device,
                     gnn_ckpt_path=Path(gnn_path) if gnn_path else gnn_checkpoint(),
                     use_gnn=getattr(cfg.WSSIS, "USE_GNN", True),
                     freeze_gnn=getattr(cfg.WSSIS, "FREEZE_GNN", False),
-                    pseudo_confidence_threshold=pseudo_thresh,
+                    threshold_policy=threshold_policy,
                 )
                 mapper = WssisSemiWeakMapper(cfg, True, teacher=teacher)
                 # Online SAM/GNN in mapper must run in main process; keep eval NUM_WORKERS.

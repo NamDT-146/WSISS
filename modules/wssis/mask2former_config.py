@@ -63,6 +63,7 @@ def add_wssis_config(cfg: CN) -> None:
     cfg.WSSIS.DISTILL_FEAT_DIM = 0  # 0 = auto from backbone channels
     cfg.WSSIS.STUDENT_IMAGE_SIZE = STAGE2_STUDENT_IMAGE_SIZE
     cfg.WSSIS.PSEUDO_CONFIDENCE_THRESHOLD = DEFAULT_PSEUDO_CONFIDENCE_THRESHOLD
+    cfg.WSSIS.PSEUDO_THRESHOLD_MODE = "fixed"
 
 
 def apply_smoke_to_cfg(cfg: CN) -> None:

@@ -51,7 +51,7 @@ Do not just look at the progress bar. You must use TensorBoard or Weights & Bias
 * **GNN Losses:** Log the `Symmetric Loss` and `Partial CE Loss`.
 
 
-2. **The GNN Agreement Rate:** Track the percentage of pixels where at least 2 out of 3 GNN refined masks exceed `pseudo_label.confidence_threshold` (pseudo-label vote). Also log **`over_threshold_ratio`**: mean fraction of GNN pixels above that threshold per batch (Stage-1 `metrics.jsonl`: `train_over_threshold_ratio`, `val_over_threshold_ratio`).
+2. **The GNN Agreement Rate:** Track pixels where ≥2/3 heads pass the effective pseudo threshold (`fixed` @ 0.9, `adamatch` batch-relative, or `freematch` EMA). Log **`over_threshold_ratio`** and **`train_effective_pseudo_threshold`** (mean cutoff per batch) in Stage-1 `metrics.jsonl`.
 3. **Compute Metrics:** Log GPU Memory Usage and Time-per-Epoch. (You will use this in your report to justify downsizing to COCO-10k / 20 classes due to Kaggle constraints).
 
 ---
