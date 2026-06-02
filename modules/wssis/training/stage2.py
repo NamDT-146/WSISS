@@ -29,10 +29,24 @@ from modules.wssis.run_context import RunContext
 from modules.wssis.proc_utils import run_subprocess
 from modules.wssis.smoke_profile import apply_smoke_env, get_smoke_profile, is_smoke_mode
 from modules.wssis.mask2former_config import align_ims_per_batch, resolve_wssis_num_gpus
+from modules.wssis.pseudo_label_confidence import resolve_pseudo_confidence_threshold
 from modules.wssis.stage2_constants import (
     STAGE2_DATALOADER_NUM_WORKERS,
     STAGE2_STUDENT_IMAGE_SIZE,
 )
+
+
+def _pseudo_confidence_threshold_for_ckpt(gnn_ckpt: Path) -> float:
+    """Match Stage-1 checkpoint ``pseudo_label.confidence_threshold`` when present."""
+    import torch
+
+    if not gnn_ckpt.exists():
+        return resolve_pseudo_confidence_threshold(None)
+    try:
+        state = torch.load(gnn_ckpt, map_location="cpu", weights_only=False)
+    except TypeError:
+        state = torch.load(gnn_ckpt, map_location="cpu")
+    return resolve_pseudo_confidence_threshold(state.get("config"))
 
 # Base Mask2Former config uses IMS_PER_BATCH=16 / BASE_LR=0.0001; doubled for WSSIS Stage-2.
 STAGE2_IMS_PER_BATCH = 128
@@ -184,6 +198,7 @@ def _mask2former_train(spec: ExperimentSpec, out_dir: Path, dry_run: bool = Fals
         f"wssis_val_{spec.id}",
     )
     gnn_ckpt = gnn_checkpoint(spec.gnn_checkpoint)
+    pseudo_conf_thresh = _pseudo_confidence_threshold_for_ckpt(gnn_ckpt)
     generated.write_text(
         f"""# Auto-generated for experiment {spec.id}
 _BASE_: "{base_yaml.as_posix()}"
@@ -201,6 +216,7 @@ WSSIS:
   FREEZE_GNN: {str(spec.freeze_gnn).lower()}
   WEAK_SIGNAL: "{spec.weak_signal}"
   GNN_CHECKPOINT: "{gnn_ckpt.as_posix()}"
+  PSEUDO_CONFIDENCE_THRESHOLD: {pseudo_conf_thresh}
   USE_FULL_VAL_FINAL: {str(use_full_val).lower()}
   ITERS_PER_EPOCH: {STAGE2_ITERS_PER_EPOCH}
   EARLY_STOPPING_PATIENCE: {early_patience}

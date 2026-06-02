@@ -69,6 +69,9 @@ def _build_config(
         "logging": {"tensorboard": True, "wandb": True},
         "use_symmetric_loss": True,
         "run_final_eval": True,
+        "pseudo_label": {
+            "confidence_threshold": 0.5,
+        },
         "visualization": {
             "enabled": True,
             "num_samples": 4,
@@ -171,6 +174,12 @@ def main() -> None:
         action="store_true",
         help="Skip full val_all teacher eval after training",
     )
+    parser.add_argument(
+        "--pseudo-confidence-threshold",
+        type=float,
+        default=None,
+        help="Min sigmoid prob per GNN head for pseudo-label voting (default: 0.5)",
+    )
     args = parser.parse_args()
 
     overrides = {}
@@ -180,6 +189,10 @@ def main() -> None:
         overrides["visualization"] = {"enabled": True, "num_samples": args.viz_samples}
     if args.no_early_stop:
         overrides["early_stopping"] = {"patience": 0}
+    if args.pseudo_confidence_threshold is not None:
+        overrides["pseudo_label"] = {
+            "confidence_threshold": float(args.pseudo_confidence_threshold),
+        }
 
     run(
         epochs=args.epochs,

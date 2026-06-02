@@ -6,6 +6,7 @@ import os
 
 from detectron2.config import CfgNode as CN
 
+from modules.wssis.pseudo_label_confidence import DEFAULT_PSEUDO_CONFIDENCE_THRESHOLD
 from modules.wssis.stage2_constants import STAGE2_STUDENT_IMAGE_SIZE
 
 
@@ -61,6 +62,7 @@ def add_wssis_config(cfg: CN) -> None:
     cfg.WSSIS.DISTILL_BACKBONE_FEAT = "res4"
     cfg.WSSIS.DISTILL_FEAT_DIM = 0  # 0 = auto from backbone channels
     cfg.WSSIS.STUDENT_IMAGE_SIZE = STAGE2_STUDENT_IMAGE_SIZE
+    cfg.WSSIS.PSEUDO_CONFIDENCE_THRESHOLD = DEFAULT_PSEUDO_CONFIDENCE_THRESHOLD
 
 
 def apply_smoke_to_cfg(cfg: CN) -> None:

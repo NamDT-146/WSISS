@@ -229,7 +229,7 @@ Cross-Resolution Feature Alignment (SAM-KD / MobileSAM style).
 
 **Flow:**
 
-1. **Pseudo-Label (weak half):** Cached SAM embed → decoder → GNN → 3 refined masks → agreement (≥2/3 vote) → `640x640` pseudo-GT.
+1. **Pseudo-Label (weak half):** Cached SAM embed → decoder → GNN → 3 refined masks → per-head binarization at `pseudo_label.confidence_threshold` → agreement (≥2/3 vote) → `640x640` pseudo-GT. See `modules/wssis/pseudo_label_confidence.py`.
 2. **Student (Mask2Former):** Combined batch forward at `640x640`.
 3. **Update Mask2Former:** GT on labeled half; pseudo-GT on weak half.
 4. **GNN (default frozen):** Optional slow LR fine-tune for Exp 1C only if not using frozen policy.
@@ -278,9 +278,9 @@ def symmetric_loss(refined_masks):
     loss_13 = F.mse_loss(m1, m3)
     return (loss_12 + loss_23 + loss_13) / 3.0
 
-def generate_pseudo_label(refined_masks_logits):
+def generate_pseudo_label(refined_masks_logits, confidence_threshold=0.5):
     probs = torch.sigmoid(refined_masks_logits)
-    binary_masks = (probs > 0.5).float()
+    binary_masks = (probs > confidence_threshold).float()  # high-confidence heads only
     votes = torch.sum(binary_masks, dim=1, keepdim=True)
     agreed_mask = (votes >= 2).float()
     pseudo_gt = F.interpolate(agreed_mask, size=(640, 640), mode='nearest')
@@ -377,7 +377,9 @@ Every experiment reads:
 
 ### 5. Dataloader & logging checklist
 
-**During training:** sup/semi/distill losses, GNN sym/partial-ce, agreement rate, GPU mem, time/epoch.
+**During training:** sup/semi/distill losses, GNN sym/partial-ce, `over_threshold_ratio` (mean pixel fraction above `pseudo_label.confidence_threshold` per batch), agreement rate (≥2/3 heads above threshold), GPU mem, time/epoch.
+
+**Config hook:** `pseudo_label.confidence_threshold` in Stage-1 `config.json` / checkpoint; Stage-2 reads `WSSIS.PSEUDO_CONFIDENCE_THRESHOLD` from experiment YAML (copied from GNN ckpt when generating overrides).
 
 **After training:** AP, AP50, AP75, AP_S/M/L; refinement pipeline grid; failure cases (3–5 images); optional t-SNE of stride-16 features.
 

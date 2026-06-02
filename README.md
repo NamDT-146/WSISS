@@ -26,6 +26,8 @@ export WSSIS_REPO_ROOT=$PWD PYTHONPATH=$PWD WSSIS_RUN_ID=wssis_main
 
 bash scripts/setup/01_download_data.sh
 bash scripts/prep/run_p0.sh --run-id $WSSIS_RUN_ID
+# Optional: stricter pseudo-labels for Stage 2 (default threshold 0.5)
+# python -m modules.wssis.prep.train_stage1_gnn --run-id $WSSIS_RUN_ID --pseudo-confidence-threshold 0.7
 bash scripts/experiments/run_smoke_test.sh   # optional sanity check first
 bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID --stage1-holdout
 python -m modules.wssis.run_experiment --exp 1A --stage train --run-id $WSSIS_RUN_ID
@@ -104,7 +106,8 @@ Train: online jitter / random scribble length. Val: fixed prompts (`val_prompts_
 
 ### Stage 2 — Semi-weak student training
 
-- Batch: 50% `labeled_5pct` (GT) + 50% `weak_95pct` (GNN pseudo-GT, 2/3 mask agreement)
+- Batch: 50% `labeled_5pct` (GT) + 50% `weak_95pct` (GNN pseudo-GT: per-head confidence gate + 2/3 mask agreement)
+- **Pseudo-label confidence:** each GNN head must exceed `pseudo_label.confidence_threshold` (default **0.5**; raise e.g. **0.7** for stricter masks). Configured in Stage-1 `config.json` / checkpoint and propagated to Stage-2 as `WSSIS.PSEUDO_CONFIDENCE_THRESHOLD`. Implementation: [modules/wssis/pseudo_label_confidence.py](modules/wssis/pseudo_label_confidence.py).
 - **Student:** Mask2Former Swin-T @ 640² (main) or YOLOv8-seg (Exp 4A)
 - **Losses:** supervised + semi-supervised + feature distillation (MSE on stride-16 vs SAM)
 - **Eval:** **student forward only** → COCO mask **AP** on val (no SAM/GNN at test time)
@@ -160,6 +163,7 @@ Stage-1 training logs (per epoch) in `logs/metrics.jsonl`:
 
 - **Loss (all components):** `train_*` / `val_*` for `bce_raw`, `bce_weighted`, `dice_raw`, `dice_weighted`, `seg_weighted`, `sym_raw`, `sym_weighted`, `total` (legacy: `train_loss`, `train_bce_loss`, …)
 - **AP (primary for early stop):** `raw_sam_ap`, `val_refined_ap`, `delta_ap`
+- **Pseudo confidence:** `pseudo_confidence_threshold`, `train_over_threshold_ratio`, `val_over_threshold_ratio` (mean fraction of GNN pixels above threshold per batch), `train_agreement_rate`, `agreement_rate` (≥2/3 heads above threshold)
 
 Early stopping uses **`val_refined_ap`**.
 
@@ -167,7 +171,7 @@ Early stopping uses **`val_refined_ap`**.
 
 - IoU / Dice during GNN training  
 - Stage-2: `sup_loss`, `semi_loss`, `distill_loss` (when integrated)  
-- GNN agreement rate (≥2/3 masks)  
+- GNN agreement rate (≥2/3 heads above `pseudo_confidence_threshold`)  
 - GPU memory, time/epoch  
 
 ### Report tables to fill
@@ -219,7 +223,7 @@ wssis/
 ├── checkpoints/              ← GNN + SAM weights
 ├── outputs/runs/<run_id>/    ← logs, ckpt, eval, report bundle
 └── modules/
-    ├── wssis/                ← orchestration, weak prompts, eval
+    ├── wssis/                ← orchestration, weak prompts, pseudo_label_confidence, eval
     ├── vig_refinenet/        ← GNN + SAM helpers
     ├── mask2former/          ← student
     └── segment-anything/     ← SAM

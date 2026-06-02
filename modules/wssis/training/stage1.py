@@ -190,6 +190,13 @@ def train_stage1_gnn(
     prompt_policy_train = training_cfg.get("prompt_policy", "train_online")
     prompt_policy_val = config.get("visualization", {}).get("prompt_policy", "val_fixed")
     signal_type = training_cfg.get("weak_signal", "mixed")
+    from modules.wssis.pseudo_label_confidence import (
+        agreement_rate,
+        over_threshold_ratio,
+        resolve_pseudo_confidence_threshold,
+    )
+
+    pseudo_conf_thresh = resolve_pseudo_confidence_threshold(config)
 
     ctx = run_ctx or RunContext(
         run_id=config.get("run_id"),
@@ -391,6 +398,8 @@ def train_stage1_gnn(
         refiner.train()
         train_totals = _loss_totals_template(with_sym=True)
         n_batches = 0
+        train_over_thresh_sum = 0.0
+        train_agreement_sum = 0.0
         cache_epoch = {"cache_hits": 0, "cache_misses": 0, "unique_images": 0}
 
         train_pbar = tqdm(
@@ -438,6 +447,11 @@ def train_stage1_gnn(
 
             _accumulate_losses(train_totals, comps)
             n_batches += 1
+            with torch.no_grad():
+                train_over_thresh_sum += over_threshold_ratio(
+                    logits, pseudo_conf_thresh
+                )
+                train_agreement_sum += agreement_rate(logits, pseudo_conf_thresh)
             train_pbar.set_postfix(
                 total=f"{comps['total']:.4f}",
                 seg=f"{comps['seg_weighted']:.4f}",
@@ -464,6 +478,8 @@ def train_stage1_gnn(
         refiner.eval()
         val_totals = _loss_totals_template(with_sym=False)
         vn = 0
+        val_over_thresh_sum = 0.0
+        val_agreement_sum = 0.0
         tracker = RefinementMetricTracker()
         val_pbar = tqdm(
             val_loader,
@@ -493,6 +509,8 @@ def train_stage1_gnn(
                 _accumulate_losses(val_totals, comps)
                 vn += 1
                 tracker.update(sam_masks_3, sam_scores, logits, masks)
+                val_over_thresh_sum += over_threshold_ratio(logits, pseudo_conf_thresh)
+                val_agreement_sum += agreement_rate(logits, pseudo_conf_thresh)
                 val_pbar.set_postfix(
                     total=f"{comps['total']:.4f}",
                     bce_w=f"{comps['bce_weighted']:.4f}",
@@ -531,7 +549,11 @@ def train_stage1_gnn(
             "delta_ap50": val_metrics["delta_ap50"],
             "epoch_time_s": epoch_time,
             "gpu_mem_mb": gpu_memory_mb(),
-            "agreement_rate": 0.0,
+            "pseudo_confidence_threshold": pseudo_conf_thresh,
+            "train_over_threshold_ratio": train_over_thresh_sum / max(n_batches, 1),
+            "val_over_threshold_ratio": val_over_thresh_sum / max(vn, 1),
+            "train_agreement_rate": train_agreement_sum / max(n_batches, 1),
+            "agreement_rate": val_agreement_sum / max(vn, 1),
         }
         history.append(row)
         ctx.log_metrics(row, step=epoch)
@@ -595,6 +617,7 @@ def train_stage1_gnn(
                 num_samples=viz_samples,
                 policy=prompt_policy_val,
                 use_sam_cache=use_sam_cache,
+                pseudo_confidence_threshold=pseudo_conf_thresh,
             )
 
         epoch_pbar.set_postfix(

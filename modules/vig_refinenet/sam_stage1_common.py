@@ -235,24 +235,31 @@ def build_batch_prompts_from_masks(
 def generate_pseudo_label_from_logits(
     refined_masks_logits: torch.Tensor,
     target_size: Optional[Tuple[int, int]] = None,
+    *,
+    confidence_threshold: Optional[float] = None,
+    vote_min: int = 2,
 ) -> torch.Tensor:
     """
-    2/3 vote agreement on 3 refined mask heads.
+    2/3 vote agreement on 3 refined mask heads (thresholded per head).
 
-    Args:
-        refined_masks_logits: [B, 3, H, W] or [3, H, W]
-    Returns:
-        pseudo_gt: [B, 1, H, W] or [1, H, W] binary float
+    Delegates to :mod:`modules.wssis.pseudo_label_confidence`.
     """
-    if refined_masks_logits.dim() == 3:
-        refined_masks_logits = refined_masks_logits.unsqueeze(0)
-    probs = torch.sigmoid(refined_masks_logits)
-    binary = (probs > 0.5).float()
-    votes = binary.sum(dim=1, keepdim=True)
-    agreed = (votes >= 2).float()
-    if target_size is not None and agreed.shape[-2:] != target_size:
-        agreed = F.interpolate(agreed, size=target_size, mode="nearest")
-    return agreed
+    from modules.wssis.pseudo_label_confidence import (
+        DEFAULT_PSEUDO_CONFIDENCE_THRESHOLD,
+        generate_pseudo_label_from_logits as _generate_pseudo,
+    )
+
+    thresh = (
+        DEFAULT_PSEUDO_CONFIDENCE_THRESHOLD
+        if confidence_threshold is None
+        else confidence_threshold
+    )
+    return _generate_pseudo(
+        refined_masks_logits,
+        target_size,
+        confidence_threshold=thresh,
+        vote_min=vote_min,
+    )
 
 
 @torch.no_grad()
@@ -270,6 +277,7 @@ def forward_teacher_objects(
     signal_type: str = "mixed",
     use_gnn: bool = True,
     use_sam_cache: bool = True,
+    confidence_threshold: Optional[float] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Teacher forward for one image with N objects.
@@ -332,7 +340,11 @@ def forward_teacher_objects(
         refined_logits = gnn_model(sam_embed, image_batch, sam_masks_3, weak_signal)
     else:
         refined_logits = sam_masks_3
-    pseudo = generate_pseudo_label_from_logits(refined_logits, target_size=(mask_size, mask_size))
+    pseudo = generate_pseudo_label_from_logits(
+        refined_logits,
+        target_size=(mask_size, mask_size),
+        confidence_threshold=confidence_threshold,
+    )
     raw_best = _best_mask_by_score(sam_masks_3, sam_scores)
     return pseudo, raw_best, refined_logits
 

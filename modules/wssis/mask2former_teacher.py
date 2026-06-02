@@ -11,9 +11,12 @@ import torch.nn as nn
 
 from modules.vig_refinenet.sam_stage1_common import (
     forward_teacher_objects,
-    generate_pseudo_label_from_logits,
     get_sam_pixel_stats,
     load_sam_vit_b,
+)
+from modules.wssis.pseudo_label_confidence import (
+    DEFAULT_PSEUDO_CONFIDENCE_THRESHOLD,
+    resolve_pseudo_confidence_threshold,
 )
 from modules.vig_refinenet.sam_stage1_refiner import build_sam_stage1_refiner
 from modules.wssis.paths import gnn_checkpoint, sam_vit_b_checkpoint
@@ -30,11 +33,13 @@ class WssisTeacherStack(nn.Module):
         use_gnn: bool = True,
         freeze_gnn: bool = False,
         mask_size: int = 256,
+        pseudo_confidence_threshold: float | None = None,
     ):
         super().__init__()
         self.device = device
         self.use_gnn = use_gnn
         self.mask_size = mask_size
+        self.pseudo_confidence_threshold = DEFAULT_PSEUDO_CONFIDENCE_THRESHOLD
         sam_path = sam_vit_b_checkpoint()
         self.sam = load_sam_vit_b(str(sam_path), device)
         self.pixel_mean, self.pixel_std = get_sam_pixel_stats(device)
@@ -53,12 +58,20 @@ class WssisTeacherStack(nn.Module):
             state = torch.load(ckpt, map_location=device, weights_only=False)
             sd = state.get("state_dict", state)
             self.gnn.load_state_dict(sd, strict=False)
+            ckpt_thresh = resolve_pseudo_confidence_threshold(state.get("config"))
+            self.pseudo_confidence_threshold = (
+                float(pseudo_confidence_threshold)
+                if pseudo_confidence_threshold is not None
+                else ckpt_thresh
+            )
             if freeze_gnn:
                 for p in self.gnn.parameters():
                     p.requires_grad = False
             else:
                 for p in self.gnn.parameters():
                     p.requires_grad = True
+        elif pseudo_confidence_threshold is not None:
+            self.pseudo_confidence_threshold = float(pseudo_confidence_threshold)
 
     @torch.no_grad()
     def generate_pseudo_for_image(
@@ -102,10 +115,11 @@ class WssisTeacherStack(nn.Module):
             signal_type=signal_type,
             use_gnn=self.use_gnn,
             use_sam_cache=use_sam_cache,
+            confidence_threshold=self.pseudo_confidence_threshold,
         )
         out_masks = []
         for i in range(pseudo.shape[0]):
-            m = (pseudo[i, 0].detach().cpu().numpy() > 0.5).astype(np.uint8)
+            m = (pseudo[i, 0].detach().cpu().numpy() > 0).astype(np.uint8)
             out_masks.append(m)
         cats = meta.get("category_ids", [0] * len(out_masks))
         return out_masks, cats

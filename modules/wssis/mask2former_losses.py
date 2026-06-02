@@ -32,12 +32,19 @@ def feature_distillation_loss(
     return F.mse_loss(aligned_m2f_feat, sam_feat.detach())
 
 
-def agreement_rate(refined_logits: torch.Tensor) -> float:
-    """Fraction of spatial locations with >=2/3 mask agreement."""
-    if refined_logits.numel() == 0:
-        return 0.0
-    probs = torch.sigmoid(refined_logits)
-    binary = (probs > 0.5).float()
-    votes = binary.sum(dim=1)
-    agreed = (votes >= 2).float().mean()
-    return float(agreed.item())
+def agreement_rate(
+    refined_logits: torch.Tensor,
+    confidence_threshold: float | None = None,
+) -> float:
+    """Fraction of spatial locations with >=2/3 mask agreement above threshold."""
+    from modules.wssis.pseudo_label_confidence import (
+        DEFAULT_PSEUDO_CONFIDENCE_THRESHOLD,
+        agreement_rate as _agreement_rate,
+    )
+
+    thresh = (
+        DEFAULT_PSEUDO_CONFIDENCE_THRESHOLD
+        if confidence_threshold is None
+        else confidence_threshold
+    )
+    return _agreement_rate(refined_logits, confidence_threshold=thresh)
