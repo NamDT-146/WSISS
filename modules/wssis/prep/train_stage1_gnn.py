@@ -73,7 +73,7 @@ def _build_config(
             },
         },
         "early_stopping": {
-            "patience": 3,
+            "patience": 10,
             "monitor": "val_refined_ap",
             "mode": "max",
         },
@@ -138,7 +138,7 @@ def run(
     run_id: str | None = None,
     run_dir: str | None = None,
     resume: bool = False,
-    patience: int = 3,
+    patience: int = 10,
     run_final_eval: bool = True,
 ) -> Path:
     ensure_dirs()
@@ -255,7 +255,7 @@ def main() -> None:
     parser.add_argument("--run-id", default=None, help="Run folder name under outputs/runs/")
     parser.add_argument("--run-dir", default=None, help="Explicit run directory path")
     parser.add_argument("--resume", action="store_true", help="Resume from last.pt in run dir")
-    parser.add_argument("--patience", type=int, default=3, help="Early stopping patience (0=off)")
+    parser.add_argument("--patience", type=int, default=10, help="Early stopping patience (0=off)")
     parser.add_argument("--no-early-stop", action="store_true")
     parser.add_argument(
         "--no-final-eval",

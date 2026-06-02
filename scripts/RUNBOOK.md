@@ -137,7 +137,7 @@ Or step-by-step:
 | TensorBoard                                                               | `logs/tensorboard/`                              |
 | WandB                                                                     | Set `WANDB_PROJECT=wssis`                        |
 | `last.pt` / `best.pt` / `epoch_XXX.pt`                                    | `checkpoints/`                                   |
-| Early stopping (patience=3 on val_refined_ap)                             | enabled by default; `--no-early-stop` to disable |
+| Early stopping (patience=10 on val_refined_ap)                            | enabled by default; `--no-early-stop` to disable |
 | Resume training                                                           | `--resume` loads `checkpoints/last.pt`           |
 
 
