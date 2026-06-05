@@ -50,9 +50,9 @@ def _pseudo_label_settings_for_ckpt(gnn_ckpt: Path) -> tuple[str, float]:
     pl = parse_pseudo_label_config(state.get("config"))
     return pl.threshold_mode, pl.confidence_threshold
 
-# Base Mask2Former config uses IMS_PER_BATCH=16 / BASE_LR=0.0001; doubled for WSSIS Stage-2.
-STAGE2_IMS_PER_BATCH = 128
-STAGE2_BASE_LR = 0.0002
+# Base Mask2Former config uses IMS_PER_BATCH=16 / BASE_LR=0.0001; 4x batch, LR scaled linearly.
+STAGE2_IMS_PER_BATCH = 64
+STAGE2_BASE_LR = 0.0001
 STAGE2_ITERS_PER_EPOCH = 75
 STAGE2_EARLY_STOP_PATIENCE = 5
 
@@ -305,7 +305,7 @@ def _yolo_train(spec: ExperimentSpec, out_dir: Path, dry_run: bool = False) -> N
         spec,
         out_dir,
         epochs=spec.stage2_epochs if not smoke else smoke.yolo_epochs,
-        batch_size=32 if not smoke else smoke.batch_size,
+        batch_size=16 if not smoke else smoke.batch_size,
         imgsz=STAGE2_STUDENT_IMAGE_SIZE if not smoke else smoke.m2f_image_size,
     )
 
