@@ -53,8 +53,8 @@ def _pseudo_label_settings_for_ckpt(gnn_ckpt: Path) -> tuple[str, float]:
 # Base Mask2Former config uses IMS_PER_BATCH=16 / BASE_LR=0.0001; 4x batch, LR scaled linearly.
 STAGE2_IMS_PER_BATCH = 64
 STAGE2_BASE_LR = 0.0001
-STAGE2_ITERS_PER_EPOCH = 75
-STAGE2_EARLY_STOP_PATIENCE = 5
+STAGE2_ITERS_PER_EPOCH = 150
+STAGE2_EARLY_STOP_PATIENCE = 10
 
 
 def _check_p0_artifacts(spec: ExperimentSpec) -> None:
