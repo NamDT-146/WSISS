@@ -19,6 +19,15 @@ from modules.wssis.pseudo_label_confidence import (
 from modules.wssis.training.gnn_losses import soft_dice_symmetric
 
 
+def _single_mask_logits(logits: torch.Tensor) -> torch.Tensor:
+    """Collapse [B,C,H,W] to [B,1,H,W] for PCE (GNN v2 uses C=1; legacy may use C=3)."""
+    if logits.dim() == 3:
+        logits = logits.unsqueeze(1)
+    if logits.shape[1] == 1:
+        return logits
+    return logits.mean(dim=1, keepdim=True)
+
+
 def partial_bce_loss(
     logits: torch.Tensor,
     target: torch.Tensor,
@@ -26,8 +35,7 @@ def partial_bce_loss(
     eps: float = 1e-8,
 ) -> torch.Tensor:
     """Masked BCE (PCE) on binary masks. logits/target [B,1,H,W] or [B,H,W]."""
-    if logits.dim() == 3:
-        logits = logits.unsqueeze(1)
+    logits = _single_mask_logits(logits)
     if target.dim() == 3:
         target = target.unsqueeze(1)
     if valid_mask.dim() == 3:
@@ -44,8 +52,7 @@ def partial_dice_loss(
     valid_mask: torch.Tensor,
     eps: float = 1e-6,
 ) -> torch.Tensor:
-    if logits.dim() == 3:
-        logits = logits.unsqueeze(1)
+    logits = _single_mask_logits(logits)
     if target.dim() == 3:
         target = target.unsqueeze(1)
     if valid_mask.dim() == 3:
@@ -139,8 +146,7 @@ def student_feedback_loss(
     eps: float = 1e-8,
 ) -> torch.Tensor:
     """PCE from high-confidence student pixels onto teacher."""
-    if teacher_logits.dim() == 3:
-        teacher_logits = teacher_logits.unsqueeze(1)
+    teacher_logits = _single_mask_logits(teacher_logits)
     if student_probs.dim() == 3:
         student_probs = student_probs.unsqueeze(1)
     high = (student_probs > tau).float()

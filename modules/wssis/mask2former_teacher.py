@@ -57,7 +57,11 @@ class WssisTeacherStack(nn.Module):
             model_cfg = dict(build_cfg.get("model") or {})
             model_cfg["mask_size"] = mask_size
             model_cfg.setdefault("num_sam_mask_inputs", 3)
-            model_cfg.setdefault("num_output_masks", 3)
+            ckpt_ver = int(state.get("wssis_ckpt_version", 1))
+            if ckpt_ver >= 3:
+                model_cfg["num_output_masks"] = 1
+            else:
+                model_cfg.setdefault("num_output_masks", 3)
             build_cfg["model"] = model_cfg
             self.gnn = build_sam_stage1_refiner(build_cfg).to(device)
             sd = state.get("state_dict", state)

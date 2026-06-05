@@ -47,6 +47,16 @@ def test_loss_schedule_warmup():
     assert w_end["lambda_s_unsup"] > 0.0
 
 
+def test_partial_bce_three_channel_logits():
+    """Legacy 3-head GNN logits are collapsed to 1 ch for PCE."""
+    logits = torch.zeros(2, 3, 4, 4)
+    target = torch.ones(2, 1, 4, 4)
+    valid = torch.ones(2, 1, 4, 4)
+    loss = partial_bce_loss(logits, target, valid)
+    assert loss.ndim == 0
+    assert loss.item() > 0.0
+
+
 def test_partial_bce_masked():
     logits = torch.zeros(1, 1, 4, 4)
     target = torch.ones(1, 1, 4, 4)
