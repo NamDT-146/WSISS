@@ -75,12 +75,16 @@ from mask2former import (
 try:
     from modules.wssis.mask2former_config import add_wssis_config
     from modules.wssis.mask2former_datasets import ensure_wssis_datasets_in_cfg
+    from modules.wssis.training.stage2_trainer import WssisStage2TrainerMixin
 except ImportError:
     add_wssis_config = None
     ensure_wssis_datasets_in_cfg = None
 
+    class WssisStage2TrainerMixin:  # type: ignore[no-redef]
+        pass
 
-class Trainer(DefaultTrainer):
+
+class Trainer(WssisStage2TrainerMixin, DefaultTrainer):
     """
     Extension of the Trainer class adapted to MaskFormer.
     """
@@ -346,9 +350,6 @@ class Trainer(DefaultTrainer):
 
     def __init__(self, cfg):
         super().__init__(cfg)
-        from modules.wssis.training.stage2_trainer import WssisStage2TrainerMixin
-
-        self._wssis_mixin = WssisStage2TrainerMixin()
         self._wssis_teacher = type(self)._wssis_teacher_ref
         self._wssis_teacher_opt = None
         wssis = getattr(cfg, "WSSIS", None)
@@ -365,20 +366,12 @@ class Trainer(DefaultTrainer):
                 lr=gnn_lr,
             )
 
-    def _wssis_joint_enabled(self) -> bool:
-        from modules.wssis.training.stage2_trainer import WssisStage2TrainerMixin
-
-        return WssisStage2TrainerMixin._wssis_joint_enabled(self)
-
     def _run_step_joint(self) -> None:
         import time
 
         from detectron2.structures import ImageList
 
-        from modules.wssis.training.stage2_trainer import (
-            WssisStage2TrainerMixin,
-            _student_head_outputs,
-        )
+        from modules.wssis.training.stage2_trainer import _student_head_outputs
 
         inner = self._trainer
         inner.iter = self.iter
@@ -388,7 +381,7 @@ class Trainer(DefaultTrainer):
         data = next(inner._data_loader_iter)
         data_time = time.perf_counter() - start
 
-        data, teacher_losses = WssisStage2TrainerMixin._wssis_prepare_joint_batch(self, data)
+        data, teacher_losses = self._wssis_prepare_joint_batch(data)
 
         images = [x["image"].to(self.model.device) for x in data]
         images_norm = [(x - self.model.pixel_mean) / self.model.pixel_std for x in images]
@@ -404,7 +397,7 @@ class Trainer(DefaultTrainer):
             else:
                 loss_dict.pop(k)
 
-        aux = WssisStage2TrainerMixin._wssis_joint_aux_losses(self, data, head_out)
+        aux = self._wssis_joint_aux_losses(data, head_out)
         loss_dict.update(teacher_losses)
         loss_dict.update(aux)
 
