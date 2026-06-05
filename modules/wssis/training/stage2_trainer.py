@@ -17,7 +17,7 @@ from modules.wssis.mask2former_datasets import coco_anns_to_masks_for_image
 from modules.wssis.pseudo_label_confidence import refined_probs_from_logits
 from modules.wssis.training.stage2_augment import apply_geom_transform_to_mask, build_dual_views
 from modules.wssis.training.stage2_losses import (
-    LossWeightSchedule,x
+    LossWeightSchedule,
     aggregate_refined_logits_per_image,
     aggregate_weak_signal_per_image,
     build_pce_valid_mask,
