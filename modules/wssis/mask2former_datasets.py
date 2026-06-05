@@ -239,11 +239,12 @@ def coco_anns_to_masks_for_image(
 ) -> Tuple[List, List[int], List[int]]:
     """Extract instance masks and ids from COCO anns."""
     masks, ann_ids, cats = [], [], []
-    for ann in anns:
+    for i, ann in enumerate(anns):
         if ann.get("iscrowd", 0):
             continue
         masks.append(ann_to_mask(ann, height, width))
-        ann_ids.append(int(ann["id"]))
+        # Detectron2 load_coco_json omits COCO ann "id"; fall back to index.
+        ann_ids.append(int(ann.get("id", i)))
         cats.append(int(ann.get("category_id", 1)))
         if max_objects and len(masks) >= max_objects:
             break
