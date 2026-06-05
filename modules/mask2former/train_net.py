@@ -371,29 +371,30 @@ class Trainer(WssisStage2TrainerMixin, DefaultTrainer):
 
         from detectron2.structures import ImageList
 
-        from modules.wssis.training.stage2_trainer import _student_head_outputs
+        from modules.wssis.training.stage2_trainer import _student_head_outputs, _unwrap_model
 
         inner = self._trainer
         inner.iter = self.iter
 
         assert self.model.training
+        model = _unwrap_model(self.model)
         start = time.perf_counter()
         data = next(inner._data_loader_iter)
         data_time = time.perf_counter() - start
 
         data, teacher_losses = self._wssis_prepare_joint_batch(data)
 
-        images = [x["image"].to(self.model.device) for x in data]
-        images_norm = [(x - self.model.pixel_mean) / self.model.pixel_std for x in images]
-        image_list = ImageList.from_tensors(images_norm, self.model.size_divisibility)
+        images = [x["image"].to(model.device) for x in data]
+        images_norm = [(x - model.pixel_mean) / model.pixel_std for x in images]
+        image_list = ImageList.from_tensors(images_norm, model.size_divisibility)
 
-        head_out = _student_head_outputs(self.model, data)
-        gt_instances = [x["instances"].to(self.model.device) for x in data]
-        targets = self.model.prepare_targets(gt_instances, image_list)
-        loss_dict = self.model.criterion(head_out, targets)
+        head_out = _student_head_outputs(model, data)
+        gt_instances = [x["instances"].to(model.device) for x in data]
+        targets = model.prepare_targets(gt_instances, image_list)
+        loss_dict = model.criterion(head_out, targets)
         for k in list(loss_dict.keys()):
-            if k in self.model.criterion.weight_dict:
-                loss_dict[k] *= self.model.criterion.weight_dict[k]
+            if k in model.criterion.weight_dict:
+                loss_dict[k] *= model.criterion.weight_dict[k]
             else:
                 loss_dict.pop(k)
 

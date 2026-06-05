@@ -30,6 +30,11 @@ from modules.wssis.training.stage2_losses import (
 from modules.vig_refinenet.sam_stage1_common import forward_teacher_objects_impl
 
 
+def _unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
+    """Detectron2 wraps the student in DDP; buffers like pixel_mean live on the inner module."""
+    return model.module if hasattr(model, "module") else model
+
+
 def _gt_masks_to_numpy_list(gt_masks) -> List[np.ndarray]:
     """Mask2Former mapper stores gt_masks as Tensor; Detectron2 uses BitMasks."""
     if isinstance(gt_masks, torch.Tensor):
@@ -79,6 +84,7 @@ def _masks_to_instances(
 
 def _student_head_outputs(model, batched_inputs: List[dict]) -> List[dict]:
     """Run backbone + sem_seg_head (training tensors, no criterion)."""
+    model = _unwrap_model(model)
     images = [x["image"].to(model.device) for x in batched_inputs]
     images = [(x - model.pixel_mean) / model.pixel_std for x in images]
     images = ImageList.from_tensors(images, model.size_divisibility)
@@ -139,7 +145,7 @@ class WssisStage2TrainerMixin:
         if teacher is None:
             return data, {}
 
-        device = self.model.device
+        device = _unwrap_model(self.model).device
         schedule = self._wssis_loss_schedule()
         weights = schedule.weights(self.iter, self.max_iter)
         thresh = float(getattr(self.cfg.WSSIS, "PSEUDO_CONFIDENCE_THRESHOLD", 0.9))
