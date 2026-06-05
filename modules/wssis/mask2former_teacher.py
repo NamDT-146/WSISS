@@ -19,7 +19,10 @@ from modules.wssis.pseudo_label_confidence import (
     PseudoThresholdPolicy,
     build_threshold_policy,
 )
-from modules.vig_refinenet.sam_stage1_refiner import build_sam_stage1_refiner
+from modules.vig_refinenet.sam_stage1_refiner import (
+    build_sam_stage1_refiner,
+    resolve_gnn_build_cfg_from_checkpoint,
+)
 from modules.wssis.paths import gnn_checkpoint, sam_vit_b_checkpoint
 from modules.wssis.weak_prompts import build_image_prompts
 
@@ -53,19 +56,20 @@ class WssisTeacherStack(nn.Module):
             ckpt = gnn_ckpt_path or gnn_checkpoint()
             state = torch.load(ckpt, map_location=device, weights_only=False)
             ckpt_run_config = state.get("config") or {}
-            build_cfg = dict(ckpt_run_config)
-            model_cfg = dict(build_cfg.get("model") or {})
-            model_cfg["mask_size"] = mask_size
-            model_cfg.setdefault("num_sam_mask_inputs", 3)
-            ckpt_ver = int(state.get("wssis_ckpt_version", 1))
-            if ckpt_ver >= 3:
-                model_cfg["num_output_masks"] = 1
-            else:
-                model_cfg.setdefault("num_output_masks", 3)
-            build_cfg["model"] = model_cfg
+            build_cfg = resolve_gnn_build_cfg_from_checkpoint(
+                state, mask_size=mask_size
+            )
             self.gnn = build_sam_stage1_refiner(build_cfg).to(device)
             sd = state.get("state_dict", state)
-            self.gnn.load_state_dict(sd, strict=False)
+            missing, unexpected = self.gnn.load_state_dict(sd, strict=False)
+            if missing or unexpected:
+                import logging
+
+                logging.getLogger(__name__).debug(
+                    "GNN load_state_dict: missing=%s unexpected=%s",
+                    missing,
+                    unexpected,
+                )
             if freeze_gnn:
                 for p in self.gnn.parameters():
                     p.requires_grad = False

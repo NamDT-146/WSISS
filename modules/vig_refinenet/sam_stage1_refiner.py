@@ -287,6 +287,44 @@ class SamStage1Refiner(nn.Module):
         return logits
 
 
+def infer_num_output_masks_from_state_dict(state_dict: dict) -> Optional[int]:
+    """Read ``mask_head`` out channels from checkpoint tensors (handles DDP ``module.`` prefix)."""
+    for key, tensor in state_dict.items():
+        norm = key.replace("module.", "")
+        if norm.endswith("mask_head.2.weight"):
+            return int(tensor.shape[0])
+    return None
+
+
+def resolve_gnn_build_cfg_from_checkpoint(
+    state: dict,
+    *,
+    mask_size: int = 256,
+) -> dict:
+    """
+    Build config for ``build_sam_stage1_refiner`` matching checkpoint tensor shapes.
+
+    ``num_output_masks`` is taken from ``mask_head.2.weight`` when present so
+    ``load_state_dict`` does not fail on channel mismatch (e.g. config says 1, ckpt has 3).
+    """
+    run_cfg = dict(state.get("config") or {})
+    build_cfg = dict(run_cfg)
+    model_cfg = dict(build_cfg.get("model") or {})
+    model_cfg["mask_size"] = mask_size
+    model_cfg.setdefault("num_sam_mask_inputs", 3)
+
+    sd = state.get("state_dict", state)
+    inferred = infer_num_output_masks_from_state_dict(sd)
+    if inferred is not None:
+        model_cfg["num_output_masks"] = inferred
+    elif "num_output_masks" not in model_cfg:
+        ckpt_ver = int(state.get("wssis_ckpt_version", 1))
+        model_cfg["num_output_masks"] = 1 if ckpt_ver >= 3 else 3
+
+    build_cfg["model"] = model_cfg
+    return build_cfg
+
+
 def build_sam_stage1_refiner(config: Optional[dict] = None) -> SamStage1Refiner:
     """Build refiner from optional config dict."""
     cfg = config or {}
