@@ -188,9 +188,20 @@ def student_feedback_loss(
 
 @dataclass
 class LossWeightSchedule:
-    """Ramp unsup/feedback after warmup_frac of training."""
+    """
+    Three-phase schedule (STAGE2_PROPOSAL §4 + mask-first conversion phase).
+
+    Phase 0 — mask focus (0 … mask_focus_frac):
+        Student M2F ``loss_mask`` boosted; teacher / semi / feedback off.
+    Phase 1 — warmup (mask_focus_frac … warmup_frac):
+        λ_t1=1, λ_t2=0.1, λ_t3=0, λ_s1=1, λ_s2=0, λ_s3=0.5 (proposal table).
+    Phase 2 — stable (warmup_frac … 1):
+        Cosine ramp λ_t3 and λ_s2; λ_s3 fixed at 0.5.
+    """
 
     warmup_frac: float = 0.2
+    mask_focus_frac: float = 0.15
+    mask_loss_boost: float = 2.5
     lambda_t_pce: float = 1.0
     lambda_t_sym: float = 0.1
     lambda_t_feedback: float = 0.05
@@ -204,23 +215,60 @@ class LossWeightSchedule:
         return min(1.0, step / max(1, total_steps))
 
     def ramp(self, step: int, total_steps: int) -> float:
-        """Cosine ramp 0->1 after warmup."""
+        """Cosine ramp 0->1 after warmup_frac."""
         p = self.progress(step, total_steps)
         if p <= self.warmup_frac:
             return 0.0
         t = (p - self.warmup_frac) / max(1e-8, 1.0 - self.warmup_frac)
         return 0.5 * (1.0 - math.cos(math.pi * min(1.0, t)))
 
+    def phase(self, step: int, total_steps: int) -> int:
+        """0=mask focus, 1=warmup, 2=full."""
+        p = self.progress(step, total_steps)
+        if p <= self.mask_focus_frac:
+            return 0
+        if p <= self.warmup_frac:
+            return 1
+        return 2
+
     def weights(self, step: int, total_steps: int) -> dict[str, float]:
+        p = self.progress(step, total_steps)
+        phase = self.phase(step, total_steps)
         r = self.ramp(step, total_steps)
-        in_warmup = self.progress(step, total_steps) <= self.warmup_frac
+
+        if phase == 0:
+            return {
+                "phase": 0.0,
+                "lambda_t_pce": 0.0,
+                "lambda_t_sym": 0.0,
+                "lambda_t_feedback": 0.0,
+                "lambda_s_sup": self.lambda_s_sup,
+                "lambda_s_unsup": 0.0,
+                "lambda_s_semi": 0.0,
+                "lambda_mask_boost": self.mask_loss_boost,
+            }
+
+        if phase == 1:
+            return {
+                "phase": 1.0,
+                "lambda_t_pce": self.lambda_t_pce,
+                "lambda_t_sym": self.lambda_t_sym,
+                "lambda_t_feedback": 0.0,
+                "lambda_s_sup": self.lambda_s_sup,
+                "lambda_s_unsup": 0.0,
+                "lambda_s_semi": self.lambda_s_semi,
+                "lambda_mask_boost": 1.0,
+            }
+
         return {
+            "phase": 2.0,
             "lambda_t_pce": self.lambda_t_pce,
-            "lambda_t_sym": self.lambda_t_sym if not in_warmup else min(self.lambda_t_sym, 0.1),
-            "lambda_t_feedback": 0.0 if in_warmup else self.lambda_t_feedback * r,
+            "lambda_t_sym": self.lambda_t_sym,
+            "lambda_t_feedback": self.lambda_t_feedback * r,
             "lambda_s_sup": self.lambda_s_sup,
-            "lambda_s_unsup": 0.0 if in_warmup else self.lambda_s_unsup * r,
+            "lambda_s_unsup": self.lambda_s_unsup * r,
             "lambda_s_semi": self.lambda_s_semi,
+            "lambda_mask_boost": 1.0,
         }
 
 

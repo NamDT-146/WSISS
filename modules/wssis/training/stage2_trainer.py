@@ -141,6 +141,8 @@ class WssisStage2TrainerMixin:
         w = self.cfg.WSSIS
         return LossWeightSchedule(
             warmup_frac=float(getattr(w, "LOSS_WARMUP_FRAC", 0.2)),
+            mask_focus_frac=float(getattr(w, "LOSS_MASK_FOCUS_FRAC", 0.15)),
+            mask_loss_boost=float(getattr(w, "LOSS_MASK_BOOST", 2.5)),
             lambda_t_pce=float(getattr(w, "LAMBDA_T_PCE", 1.0)),
             lambda_t_sym=float(getattr(w, "LAMBDA_T_SYM", 0.1)),
             lambda_t_feedback=float(getattr(w, "LAMBDA_T_FEEDBACK", 0.05)),
@@ -148,6 +150,19 @@ class WssisStage2TrainerMixin:
             lambda_s_unsup=float(getattr(w, "LAMBDA_S_UNSUP", 1.0)),
             lambda_s_semi=float(getattr(w, "LAMBDA_S_SEMI", 0.5)),
         )
+
+    def _wssis_apply_student_criterion_weights(
+        self, loss_dict: dict, weights: dict[str, float]
+    ) -> None:
+        """Scale M2F student losses: λ_s1 on all sup terms; extra boost on loss_mask early."""
+        sup_w = float(weights.get("lambda_s_sup", 1.0))
+        mask_boost = float(weights.get("lambda_mask_boost", 1.0))
+        for key in list(loss_dict.keys()):
+            if not key.startswith(("loss_ce", "loss_mask", "loss_dice")):
+                continue
+            loss_dict[key] *= sup_w
+            if key.startswith("loss_mask"):
+                loss_dict[key] *= mask_boost
 
     def _wssis_prepare_joint_batch(self, data: List[dict]) -> Tuple[List[dict], Dict[str, torch.Tensor]]:
         teacher = getattr(self, "_wssis_teacher", None)
@@ -248,15 +263,9 @@ class WssisStage2TrainerMixin:
             n_teacher += 1
 
             sam_probs = refined_probs_from_logits(sam3)
-            # Batch-adaptive (e.g. AdaMatch) cutoff instead of a fixed global threshold:
-            # scales with the confidence actually present in this image's SAM outputs.
-            if teacher.threshold_policy is not None:
-                eff_thresh = float(
-                    teacher.threshold_policy.effective_threshold(sam3, update=True)
-                )
-            else:
-                eff_thresh = thresh
-            pseudo_vote, _ = voting_pseudo_mask(sam_probs, threshold=eff_thresh, vote_min=vote_min)
+            pseudo_vote, _ = voting_pseudo_mask(
+                sam_probs, threshold=thresh, vote_min=vote_min
+            )
 
             pseudo_np = []
             for j in range(pseudo_vote.shape[0]):

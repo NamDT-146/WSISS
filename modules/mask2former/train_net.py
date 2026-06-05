@@ -387,6 +387,9 @@ class Trainer(WssisStage2TrainerMixin, DefaultTrainer):
 
         data, teacher_losses = self._wssis_prepare_joint_batch(data)
 
+        schedule = self._wssis_loss_schedule()
+        loss_weights = schedule.weights(self.iter, self.max_iter)
+
         images = [x["image"].to(model.device) for x in data]
         images_norm = [(x - model.pixel_mean) / model.pixel_std for x in images]
         image_list = ImageList.from_tensors(images_norm, model.size_divisibility)
@@ -400,6 +403,8 @@ class Trainer(WssisStage2TrainerMixin, DefaultTrainer):
                 loss_dict[k] *= model.criterion.weight_dict[k]
             else:
                 loss_dict.pop(k)
+
+        self._wssis_apply_student_criterion_weights(loss_dict, loss_weights)
 
         aux = self._wssis_joint_aux_losses(data, head_out)
         loss_dict.update(teacher_losses)
@@ -467,6 +472,19 @@ class Trainer(WssisStage2TrainerMixin, DefaultTrainer):
             if v is not None:
                 sup += float(v)
         storage.put_scalar("wssis/sup_loss", sup, smoothing_hint=False)
+        if loss_mask is not None:
+            storage.put_scalar("wssis/loss_mask", float(loss_mask), smoothing_hint=False)
+        if getattr(self.cfg, "WSSIS", None) and getattr(
+            self.cfg.WSSIS, "USE_STAGE2_JOINT_LOSS", False
+        ):
+            schedule = self._wssis_loss_schedule()
+            w = schedule.weights(self.iter, self.max_iter)
+            storage.put_scalar("wssis/loss_phase", w.get("phase", 0.0), smoothing_hint=False)
+            storage.put_scalar(
+                "wssis/lambda_mask_boost",
+                w.get("lambda_mask_boost", 1.0),
+                smoothing_hint=False,
+            )
         for key in (
             "loss_teacher_pce",
             "loss_teacher_sym",
@@ -474,6 +492,12 @@ class Trainer(WssisStage2TrainerMixin, DefaultTrainer):
             "loss_semi",
         ):
             val = _latest(key)
+            if val is not None:
+                storage.put_scalar(f"wssis/{key}", float(val), smoothing_hint=False)
+        for key in ("sup_ratio", "sup_nonempty_frac"):
+            val = _latest(f"wssis/{key}")
+            if val is None:
+                val = _latest(key)
             if val is not None:
                 storage.put_scalar(f"wssis/{key}", float(val), smoothing_hint=False)
 

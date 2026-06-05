@@ -6,7 +6,6 @@ import os
 
 from detectron2.config import CfgNode as CN
 
-from modules.wssis.pseudo_label_confidence import DEFAULT_PSEUDO_CONFIDENCE_THRESHOLD
 from modules.wssis.stage2_constants import STAGE2_STUDENT_IMAGE_SIZE
 
 
@@ -63,10 +62,12 @@ def add_wssis_config(cfg: CN) -> None:
     cfg.WSSIS.DISTILL_BACKBONE_FEAT = "res4"
     cfg.WSSIS.DISTILL_FEAT_DIM = 0  # 0 = auto from backbone channels
     cfg.WSSIS.STUDENT_IMAGE_SIZE = STAGE2_STUDENT_IMAGE_SIZE
-    cfg.WSSIS.PSEUDO_CONFIDENCE_THRESHOLD = DEFAULT_PSEUDO_CONFIDENCE_THRESHOLD
+    cfg.WSSIS.PSEUDO_CONFIDENCE_THRESHOLD = 0.5
     cfg.WSSIS.PSEUDO_THRESHOLD_MODE = "fixed"
     cfg.WSSIS.USE_STAGE2_JOINT_LOSS = False
     cfg.WSSIS.LOSS_WARMUP_FRAC = 0.2
+    cfg.WSSIS.LOSS_MASK_FOCUS_FRAC = 0.15
+    cfg.WSSIS.LOSS_MASK_BOOST = 2.5
     cfg.WSSIS.LAMBDA_T_PCE = 1.0
     cfg.WSSIS.LAMBDA_T_SYM = 0.1
     cfg.WSSIS.LAMBDA_T_FEEDBACK = 0.05
@@ -74,7 +75,7 @@ def add_wssis_config(cfg: CN) -> None:
     cfg.WSSIS.LAMBDA_S_UNSUP = 1.0
     cfg.WSSIS.LAMBDA_S_SEMI = 0.5
     cfg.WSSIS.FEEDBACK_THRESHOLD = 0.95
-    cfg.WSSIS.PSEUDO_VOTE_MIN = 2
+    cfg.WSSIS.PSEUDO_VOTE_MIN = 1
     cfg.WSSIS.POINT_JITTER_PX = 5
     cfg.WSSIS.BOX_EXPAND_RATIO = 0.05
     cfg.WSSIS.SCRIBBLE_TRIM_RATIO = 0.15
