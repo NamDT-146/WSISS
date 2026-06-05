@@ -181,13 +181,21 @@ class WssisStage2TrainerMixin:
             rec["height"] = h_s
             rec["width"] = w_s
 
-            if is_labeled and "instances" in rec:
-                inst = rec["instances"].to(device)
-                if inst.has("gt_masks") and len(inst) > 0:
-                    masks_np = _gt_masks_to_numpy_list(inst.gt_masks)
-                    warped = [apply_geom_transform_to_mask(m, dual.geom) for m in masks_np]
-                    cats = inst.gt_classes.cpu().tolist()
-                    rec["instances"] = _masks_to_instances(warped, cats, (h_s, w_s), device)
+            if is_labeled:
+                anns = rec.get("wssis_teacher_anns") or rec.get("annotations") or []
+                if anns:
+                    mask_np_list, _, cats = coco_anns_to_masks_for_image(
+                        anns, image_rgb.shape[0], image_rgb.shape[1], max_objects=8
+                    )
+                    if mask_np_list:
+                        warped = [
+                            apply_geom_transform_to_mask(m, dual.geom) for m in mask_np_list
+                        ]
+                        rec["instances"] = _masks_to_instances(
+                            warped, cats, (h_s, w_s), device
+                        )
+                    else:
+                        rec["instances"] = _empty_instances(h_s, w_s, device)
                 else:
                     rec["instances"] = _empty_instances(h_s, w_s, device)
                 continue
@@ -254,7 +262,16 @@ class WssisStage2TrainerMixin:
             for j in range(pseudo_vote.shape[0]):
                 pm = (pseudo_vote[j, 0].detach().cpu().numpy() > 0.5).astype(np.uint8)
                 if pm.shape != (h_s, w_s):
-                    pm = apply_geom_transform_to_mask(pm, dual.geom)
+                    # Teacher logits are at mask_size (e.g. 256); resize to student crop — do
+                    # not apply dual.geom here (that expects full-image coordinates).
+                    try:
+                        import cv2
+
+                        pm = cv2.resize(pm, (w_s, h_s), interpolation=cv2.INTER_NEAREST)
+                    except ImportError:
+                        t = torch.from_numpy(pm).unsqueeze(0).unsqueeze(0).float()
+                        t = F.interpolate(t, size=(h_s, w_s), mode="nearest")
+                        pm = t[0, 0].numpy().astype(np.uint8)
                 pseudo_np.append(pm)
                 sup_fg_pixels += float(pm.sum())
                 sup_total_pixels += float(pm.size)

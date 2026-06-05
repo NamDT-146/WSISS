@@ -105,6 +105,15 @@ class HungarianMatcher(nn.Module):
             out_prob = outputs["pred_logits"][b].softmax(-1)  # [num_queries, num_classes]
             tgt_ids = targets[b]["labels"]
 
+            if len(tgt_ids) == 0:
+                indices.append(
+                    (
+                        torch.zeros(0, dtype=torch.int64),
+                        torch.zeros(0, dtype=torch.int64),
+                    )
+                )
+                continue
+
             # Compute the classification cost. Contrary to the loss, we don't use the NLL,
             # but approximate it in 1 - proba[target class].
             # The 1 is a constant that doesn't change the matching, it can be ommitted.
@@ -134,11 +143,9 @@ class HungarianMatcher(nn.Module):
             with autocast("cuda", enabled=False):
                 out_mask = out_mask.float()
                 tgt_mask = tgt_mask.float()
-                # Compute the focal loss between masks
-                cost_mask = batch_sigmoid_ce_loss_jit(out_mask, tgt_mask)
-
-                # Compute the dice loss betwen masks
-                cost_dice = batch_dice_loss_jit(out_mask, tgt_mask)
+                # Avoid TorchScript: ``Global alloc not supported yet`` on some PyTorch/CUDA builds.
+                cost_mask = batch_sigmoid_ce_loss(out_mask, tgt_mask)
+                cost_dice = batch_dice_loss(out_mask, tgt_mask)
             
             # Final cost matrix
             C = (
