@@ -23,6 +23,7 @@ from modules.wssis.paths import build_coco_paths, gnn_checkpoint, resolve_coco_i
 from modules.wssis.pseudo_label_confidence import build_threshold_policy, refined_probs_from_logits
 from modules.wssis.stage2_constants import STAGE2_STUDENT_IMAGE_SIZE
 from modules.wssis.training.stage2_augment import apply_geom_transform_to_mask, build_dual_views
+from modules.wssis.training.stage2_yolo_proto import yolo_mask_logits as _yolo_mask_logits
 from modules.wssis.training.stage2_losses import (
     LossWeightSchedule,
     build_pce_valid_mask,
@@ -99,19 +100,6 @@ def _identity_geom(out_size: int, src_shape: tuple):
     return GeomTransformParams(h, w, 0, 0, h, w, False, out_size)
 
 
-def _yolo_mask_logits(model, images: torch.Tensor) -> torch.Tensor:
-    """Best-effort mask logits [B,1,H,W] from YOLOv8-seg."""
-    out = model.model(images)
-    if isinstance(out, (list, tuple)):
-        out = out[0]
-    if isinstance(out, dict) and "pred_masks" in out:
-        pm = out["pred_masks"]
-        return pm.mean(dim=1, keepdim=True) if pm.dim() == 4 else pm
-    if hasattr(out, "shape") and out.dim() >= 3:
-        return out[:, :1] if out.shape[1] > 1 else out
-    raise RuntimeError("Could not extract YOLO mask logits from model output")
-
-
 def train_stage2_yolo(
     spec: ExperimentSpec,
     out_dir: Path,
@@ -158,7 +146,12 @@ def train_stage2_yolo(
     yolo = YOLO("yolov8n-seg.pt")
     student = yolo.model.to(device)
     student.train()
-    student_opt = torch.optim.AdamW(student.parameters(), lr=1e-4)
+    proto_ch = 32
+    mask_proj = torch.nn.Conv2d(proto_ch, 1, kernel_size=1, bias=True).to(device)
+    student_opt = torch.optim.AdamW(
+        list(student.parameters()) + list(mask_proj.parameters()),
+        lr=1e-4,
+    )
 
     schedule = LossWeightSchedule()
     total_steps = max(1, epochs * len(loader))
@@ -237,12 +230,7 @@ def train_stage2_yolo(
             if not images_s:
                 continue
             img_batch = torch.stack(images_s, dim=0).to(device)
-            try:
-                pred = _yolo_mask_logits(yolo, img_batch)
-            except RuntimeError:
-                pred = student(img_batch)
-                if pred.dim() == 4 and pred.shape[1] != 1:
-                    pred = pred[:, :1]
+            pred = _yolo_mask_logits(student, mask_proj, img_batch, imgsz)
 
             for i, rec in enumerate(batch_recs):
                 if "_target_mask" not in rec:
@@ -288,7 +276,14 @@ def train_stage2_yolo(
             if teacher_opt is not None:
                 teacher_opt.step()
 
-        torch.save({"model": student.state_dict(), "epoch": epoch}, ckpt_dir / "last.pt")
+        torch.save(
+            {
+                "model": student.state_dict(),
+                "mask_proj": mask_proj.state_dict(),
+                "epoch": epoch,
+            },
+            ckpt_dir / "last.pt",
+        )
 
     meta_path = ckpt_dir / "stage2_yolo_meta.json"
     meta_path.write_text(json.dumps({"epochs": epochs, "imgsz": imgsz, "spec": spec.id}), encoding="utf-8")
