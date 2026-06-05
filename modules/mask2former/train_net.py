@@ -85,6 +85,8 @@ class Trainer(DefaultTrainer):
     Extension of the Trainer class adapted to MaskFormer.
     """
 
+    _wssis_teacher_ref = None
+
     @classmethod
     def build_evaluator(cls, cfg, dataset_name, output_folder=None):
         """
@@ -216,6 +218,7 @@ class Trainer(DefaultTrainer):
                     freeze_gnn=getattr(cfg.WSSIS, "FREEZE_GNN", False),
                     threshold_policy=threshold_policy,
                 )
+                cls._wssis_teacher_ref = teacher
                 mapper = WssisSemiWeakMapper(cfg, True, teacher=teacher)
                 # Online SAM/GNN in mapper must run in main process; keep eval NUM_WORKERS.
                 eval_workers = int(cfg.DATALOADER.NUM_WORKERS)
@@ -279,18 +282,6 @@ class Trainer(DefaultTrainer):
         params: List[Dict[str, Any]] = []
         memo: Set[torch.nn.parameter.Parameter] = set()
 
-        # Lightweight feature aligner (semi-weak distillation)
-        aligner = getattr(model, "wssis_aligner", None) or getattr(model, "wssis_projector", None)
-        if aligner is not None:
-            params.append(
-                {
-                    "params": list(aligner.parameters()),
-                    "lr": cfg.SOLVER.BASE_LR,
-                    "weight_decay": cfg.SOLVER.WEIGHT_DECAY,
-                }
-            )
-            memo.update(p for p in aligner.parameters())
-
         for module_name, module in model.named_modules():
             for module_param_name, value in module.named_parameters(recurse=False):
                 if not value.requires_grad:
@@ -351,16 +342,88 @@ class Trainer(DefaultTrainer):
     def build_model(cls, cfg):
         from detectron2.modeling import build_model as d2_build_model
 
-        model = d2_build_model(cfg)
-        if getattr(cfg, "WSSIS", None) and getattr(cfg.WSSIS, "USE_DISTILL", False):
-            from modules.wssis.wssis_maskformer_distill import attach_wssis_distillation
+        return d2_build_model(cfg)
 
-            model = attach_wssis_distillation(model, cfg)
-        return model
+    def __init__(self, cfg):
+        super().__init__(cfg)
+        from modules.wssis.training.stage2_trainer import WssisStage2TrainerMixin
+
+        self._wssis_mixin = WssisStage2TrainerMixin()
+        self._wssis_teacher = type(self)._wssis_teacher_ref
+        self._wssis_teacher_opt = None
+        wssis = getattr(cfg, "WSSIS", None)
+        if (
+            self._wssis_teacher is not None
+            and wssis is not None
+            and getattr(wssis, "USE_STAGE2_JOINT_LOSS", False)
+            and self._wssis_teacher.gnn is not None
+            and not getattr(wssis, "FREEZE_GNN", False)
+        ):
+            gnn_lr = float(getattr(wssis, "GNN_LR", 1e-5))
+            self._wssis_teacher_opt = torch.optim.AdamW(
+                self._wssis_teacher.gnn.parameters(),
+                lr=gnn_lr,
+            )
+
+    def _wssis_joint_enabled(self) -> bool:
+        from modules.wssis.training.stage2_trainer import WssisStage2TrainerMixin
+
+        return WssisStage2TrainerMixin._wssis_joint_enabled(self)
+
+    def _run_step_joint(self) -> None:
+        import time
+
+        from detectron2.modeling import ImageList
+
+        from modules.wssis.training.stage2_trainer import (
+            WssisStage2TrainerMixin,
+            _student_head_outputs,
+        )
+
+        assert self.model.training
+        start = time.perf_counter()
+        data = next(self._data_loader_iter)
+        data_time = time.perf_counter() - start
+
+        data, teacher_losses = WssisStage2TrainerMixin._wssis_prepare_joint_batch(self, data)
+
+        images = [x["image"].to(self.model.device) for x in data]
+        images_norm = [(x - self.model.pixel_mean) / self.model.pixel_std for x in images]
+        image_list = ImageList.from_tensors(images_norm, self.model.size_divisibility)
+
+        head_out = _student_head_outputs(self.model, data)
+        gt_instances = [x["instances"].to(self.model.device) for x in data]
+        targets = self.model.prepare_targets(gt_instances, image_list)
+        loss_dict = self.model.criterion(head_out, targets)
+        for k in list(loss_dict.keys()):
+            if k in self.model.criterion.weight_dict:
+                loss_dict[k] *= self.model.criterion.weight_dict[k]
+            else:
+                loss_dict.pop(k)
+
+        aux = WssisStage2TrainerMixin._wssis_joint_aux_losses(self, data, head_out)
+        loss_dict.update(teacher_losses)
+        loss_dict.update(aux)
+
+        losses = sum(loss_dict.values())
+        self.optimizer.zero_grad()
+        if self._wssis_teacher_opt is not None:
+            self._wssis_teacher_opt.zero_grad()
+        losses.backward()
+        self._write_metrics(loss_dict, data_time)
+        self.optimizer.step()
+        if self._wssis_teacher_opt is not None:
+            self._wssis_teacher_opt.step()
 
     def run_step(self):
-        """Log WSSIS component losses when semi-weak training is enabled."""
-        super().run_step()
+        """Joint teacher-student step or default Mask2Former step."""
+        if self._wssis_joint_enabled():
+            self._run_step_joint()
+        else:
+            super().run_step()
+        self._wssis_log_metrics()
+
+    def _wssis_log_metrics(self) -> None:
         if not getattr(self.cfg, "WSSIS", None):
             return
         if not getattr(self.cfg.WSSIS, "USE_SEMI_WEAK", False):
@@ -386,18 +449,15 @@ class Trainer(DefaultTrainer):
             if v is not None:
                 sup += float(v)
         storage.put_scalar("wssis/sup_loss", sup, smoothing_hint=False)
-        ratio = float(getattr(self.cfg.WSSIS, "LABELED_BATCH_RATIO", 0.5))
-        storage.put_scalar(
-            "wssis/semi_loss",
-            sup * max(0.0, 1.0 - ratio) if sup else 0.0,
-            smoothing_hint=False,
-        )
-        loss_distill = _latest("loss_distill")
-        storage.put_scalar(
-            "wssis/distill_loss",
-            float(loss_distill) if loss_distill is not None else 0.0,
-            smoothing_hint=False,
-        )
+        for key in (
+            "loss_teacher_pce",
+            "loss_teacher_sym",
+            "loss_teacher_feedback",
+            "loss_semi",
+        ):
+            val = _latest(key)
+            if val is not None:
+                storage.put_scalar(f"wssis/{key}", float(val), smoothing_hint=False)
 
     def _wssis_training_enabled(self) -> bool:
         wssis = getattr(self.cfg, "WSSIS", None)

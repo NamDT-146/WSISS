@@ -21,6 +21,7 @@ class WssisSemiWeakMapper(COCOInstanceNewBaselineDatasetMapper):
         super().__init__(cfg, is_train)
         self._teacher = teacher
         self._use_semi = getattr(cfg.WSSIS, "USE_SEMI_WEAK", False)
+        self._joint_loss = getattr(cfg.WSSIS, "USE_STAGE2_JOINT_LOSS", False)
         self._weak_signal_default = getattr(cfg.WSSIS, "WEAK_SIGNAL", "points_only")
 
     def __call__(self, dataset_dict):
@@ -28,19 +29,32 @@ class WssisSemiWeakMapper(COCOInstanceNewBaselineDatasetMapper):
         is_labeled = d.get("wssis_is_labeled", True)
         image_id = d.get("image_id", 0)
         split = "train"
+        weak_sig = d.get(
+            "wssis_weak_signal_type",
+            self._weak_signal_default if self._weak_signal_default != "none" else "points_only",
+        )
+        teacher_anns = d.get("wssis_teacher_anns")
         if (
             self._use_semi
             and self._teacher is not None
-            and not d.get("wssis_is_labeled", True)
+            and not is_labeled
+            and not self._joint_loss
         ):
             d["annotations"] = self._pseudo_annotations(d)
+        if self._joint_loss and not is_labeled:
+            d["annotations"] = []
         d.pop("wssis_teacher_anns", None)
         d.pop("wssis_is_labeled", None)
+        d.pop("wssis_weak_signal_type", None)
         out = super().__call__(d)
         if out is not None and self._use_semi:
             out["wssis_is_labeled"] = is_labeled
             out["image_id"] = image_id
             out["split"] = split
+            out["file_name"] = dataset_dict.get("file_name")
+            if self._joint_loss:
+                out["wssis_teacher_anns"] = teacher_anns
+                out["wssis_weak_signal_type"] = weak_sig
         return out
 
     def _pseudo_annotations(self, dataset_dict: dict) -> list:

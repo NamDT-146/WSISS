@@ -71,15 +71,29 @@ No KL in Stage-2.
 - [`evaluate_teacher.py`](../modules/wssis/training/evaluate_teacher.py) — per-signal teacher AP
 - [`visualize.py`](../modules/wssis/training/visualize.py) — object-aware 1×5 grids (`prompt_space=1024`)
 
-### Stage-2
+### Stage-2 (joint loss — [STAGE2_PROPOSAL.md](STAGE2_PROPOSAL.md))
+
+| Loss | Weight (stable) | Module |
+|------|-----------------|--------|
+| Teacher PCE | 1.0 | `stage2_losses.partial_bce_loss` |
+| Teacher sym (3 SAM heads) | 0.1 | `symmetric_sam_triplet_loss` |
+| Teacher feedback | 0.05 (ramp) | `student_feedback_loss` |
+| Student sup (CE+mask+dice) | 1.0 | M2F criterion / YOLO mask |
+| Student unsup (voted pseudo) | 0→1 (ramp) | injected pseudo instances |
+| Student semi (PCE) | 0.5 | `partial_bce` + `partial_dice` on strong aug |
 
 - [`stage2.py`](../modules/wssis/training/stage2.py) — launch M2F / YOLO
-- [`mask2former_teacher.py`](../modules/wssis/mask2former_teacher.py) — online pseudo teacher
-- [`mask2former_mapper.py`](../modules/wssis/mask2former_mapper.py) — inject pseudo anns per weak image
+- [`stage2_losses.py`](../modules/wssis/training/stage2_losses.py) — PCE, sym, vote, schedule
+- [`stage2_augment.py`](../modules/wssis/training/stage2_augment.py) — dual weak/strong views
+- [`stage2_trainer.py`](../modules/wssis/training/stage2_trainer.py) — M2F `_run_step_joint`
+- [`stage2_yolo.py`](../modules/wssis/training/stage2_yolo.py) — YOLO joint loop
+- [`mask2former_teacher.py`](../modules/wssis/mask2former_teacher.py) — `forward_trainable` (SAM frozen, GNN trainable)
+- [`mask2former_mapper.py`](../modules/wssis/mask2former_mapper.py) — defers pseudo when `USE_STAGE2_JOINT_LOSS`
 - [`mask2former_dataloader.py`](../modules/wssis/mask2former_dataloader.py) — 50/50 labeled/weak
-- [`mask2former_datasets.py`](../modules/wssis/mask2former_datasets.py) — register COCO + `wssis_weak_signal_type`
-- [`yolo_export.py`](../modules/wssis/yolo_export.py) — YOLO dataset + per-image weak type
+- [`yolo_export.py`](../modules/wssis/yolo_export.py) — eval/offline export only
 - [`evaluate_yolo.py`](../modules/wssis/training/evaluate_yolo.py) — YOLO val metrics JSON
+
+Feature distillation (`wssis_maskformer_distill.py`) is **deprecated**.
 
 ### Splits
 
@@ -101,12 +115,12 @@ Generate signal map only:
 
 ---
 
-## Pseudo-labels → student
+## Pseudo-labels → student (joint Stage-2)
 
-1. Weak image: GT geometry in `wssis_teacher_anns` (oracle for prompts only).
-2. [`forward_teacher_objects`](modules/vig_refinenet/sam_stage1_common.py): typed prompt → SAM → GNN → single mask.
-3. [`pseudo_label_confidence.py`](modules/wssis/pseudo_label_confidence.py): threshold (1 head, `vote_min=1`).
-4. Mapper writes COCO `segmentation` per instance → Mask2Former / YOLO labels.
+1. Weak image: oracle geometry in `wssis_teacher_anns` (prompts only).
+2. Teacher weak view: [`forward_teacher_objects_impl`](modules/vig_refinenet/sam_stage1_common.py) → SAM 3 heads + GNN.
+3. Unsup pseudo: **vote** 3 SAM heads @ 0.9, keep pixels with ≥2 agreements.
+4. Trainer injects pseudo as `instances` on student **strong** view; PCE/semi use jittered weak maps.
 
 Labeled semi-weak half keeps real GT.
 

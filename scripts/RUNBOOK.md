@@ -119,26 +119,26 @@ bash scripts/prep/run_p0.sh --run-id $WSSIS_RUN_ID --resume --skip-splits --skip
 Or step-by-step:
 
 
-| Step | Command                                                                            | Output                                                                               |
-| ---- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| P0.1 | `python -m modules.wssis.prep.generate_splits`                                     | `data/splits/*`                                                                      |
-| P0.2 | `python -m modules.wssis.prep.precompute_sam_embeddings`                           | `data/cache/sam_embeddings/` (~23 GB)                                                |
+| Step | Command                                                                                           | Output                                                                               |
+| ---- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| P0.1 | `python -m modules.wssis.prep.generate_splits`                                                    | `data/splits/*`                                                                      |
+| P0.2 | `python -m modules.wssis.prep.precompute_sam_embeddings`                                          | `data/cache/sam_embeddings/` (~23 GB)                                                |
 | P0.4 | `python -m modules.wssis.prep.train_stage1_gnn --run-id $WSSIS_RUN_ID --epochs 30 --batch-size 4` | `outputs/runs/<id>/checkpoints/best.pt` + legacy `checkpoints/gnn_refiner_stage1.pt` |
 
 
 ### Logging & checkpoints (Stage-1)
 
 
-| Feature                                                                   | Location                                         |
-| ------------------------------------------------------------------------- | ------------------------------------------------ |
-| Per-epoch **loss components** (raw + weighted BCE, Dice, sym; train + val) + **AP** (`raw_sam_ap`, `val_refined_ap`, `delta_ap`) | `outputs/runs/<id>/logs/metrics.jsonl` |
-| Stage-1 **train data** | `labeled_5pct_train.txt`; in-loop val = `labeled_5pct_val.txt`; final = `val_all.txt` |
-| Text log                                                                  | `logs/train.log`                                 |
-| TensorBoard                                                               | `logs/tensorboard/`                              |
-| WandB                                                                     | Set `WANDB_PROJECT=wssis`                        |
-| `last.pt` / `best.pt` / `epoch_XXX.pt`                                    | `checkpoints/`                                   |
-| Early stopping (patience=10 on val_refined_ap)                            | enabled by default; `--no-early-stop` to disable |
-| Resume training                                                           | `--resume` loads `checkpoints/last.pt`           |
+| Feature                                                                                                                          | Location                                                                              |
+| -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| Per-epoch **loss components** (raw + weighted BCE, Dice, sym; train + val) + **AP** (`raw_sam_ap`, `val_refined_ap`, `delta_ap`) | `outputs/runs/<id>/logs/metrics.jsonl`                                                |
+| Stage-1 **train data**                                                                                                           | `labeled_5pct_train.txt`; in-loop val = `labeled_5pct_val.txt`; final = `val_all.txt` |
+| Text log                                                                                                                         | `logs/train.log`                                                                      |
+| TensorBoard                                                                                                                      | `logs/tensorboard/`                                                                   |
+| WandB                                                                                                                            | Set `WANDB_PROJECT=wssis`                                                             |
+| `last.pt` / `best.pt` / `epoch_XXX.pt`                                                                                           | `checkpoints/`                                                                        |
+| Early stopping (patience=10 on val_refined_ap)                                                                                   | enabled by default; `--no-early-stop` to disable                                      |
+| Resume training                                                                                                                  | `--resume` loads `checkpoints/last.pt`                                                |
 
 
 **Visualizations:** Every epoch → `outputs/runs/<id>/visualizations/` (5 panels). Report bundle → `outputs/runs/<id>/report/`.
@@ -161,12 +161,14 @@ python -m modules.wssis.prep.train_stage1_gnn --run-id $WSSIS_RUN_ID \
 
 Each batch runs **SAM mask decoder** (per instance) + **GNN**. Without P0.2 cache, it also ran **SAM ViT-B encoder** every step — often **many times per image** (one dataloader row per COCO instance).
 
-| Factor | Effect |
-|--------|--------|
-| **Instance-level dataset** | ~500 labeled images → **thousands** of train steps/epoch (multiple objects per image) |
-| **Val on full `val_all`** | Many more val batches than train |
-| **Large `batch_size`** (e.g. 16) | More serial SAM decoder calls per batch |
-| **No P0.2 cache** (old runs) | Re-encoded every instance; very slow |
+
+| Factor                           | Effect                                                                                |
+| -------------------------------- | ------------------------------------------------------------------------------------- |
+| **Instance-level dataset**       | ~500 labeled images → **thousands** of train steps/epoch (multiple objects per image) |
+| **Val on full `val_all`**        | Many more val batches than train                                                      |
+| **Large `batch_size`** (e.g. 16) | More serial SAM decoder calls per batch                                               |
+| **No P0.2 cache** (old runs)     | Re-encoded every instance; very slow                                                  |
+
 
 **Speedups (current code):** `use_sam_embedding_cache=true` (default) loads `data/cache/sam_embeddings/{train,val}/*.fp16.npy` from P0.2 and deduplicates encoder work by `image_id` within a batch. Used in **Stage-1 train/val**, **teacher eval**, and **epoch visualizations**. **Run P0.2 before P0.4** for best speed.
 
@@ -176,10 +178,12 @@ Each batch runs **SAM mask decoder** (per instance) + **GNN**. Without P0.2 cach
 
 ### Eval split policy (train fast, final full)
 
-| Phase | Train data | In-loop / routine eval | Final eval |
-|-------|------------|------------------------|------------|
-| **P0.4 Stage-1 GNN** | `labeled_5pct_train.txt` (~80% of 5% pool) | `labeled_5pct_val.txt` (~20% holdout, still 5% pool) | **`val_all.txt` full** (auto after P0.4; `--no-final-eval` to skip) |
-| **Stage-2 / experiments** | per exp (`train_all`, etc.) | **`val_sample_20pct.txt`** (~20% of val); early stop **patience=3** on `segm/AP` | **full `val_all`** auto at end of training (Mask2Former); batch eval via `run_all_experiment_eval.sh --full-val` |
+
+| Phase                     | Train data                                 | In-loop / routine eval                                                           | Final eval                                                                                                       |
+| ------------------------- | ------------------------------------------ | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| **P0.4 Stage-1 GNN**      | `labeled_5pct_train.txt` (~80% of 5% pool) | `labeled_5pct_val.txt` (~20% holdout, still 5% pool)                             | `**val_all.txt` full** (auto after P0.4; `--no-final-eval` to skip)                                              |
+| **Stage-2 / experiments** | per exp (`train_all`, etc.)                | `**val_sample_20pct.txt`** (~20% of val); early stop **patience=3** on `segm/AP` | **full `val_all`** auto at end of training (Mask2Former); batch eval via `run_all_experiment_eval.sh --full-val` |
+
 
 Regenerate splits after changing fractions: `python -m modules.wssis.prep.generate_splits --force`
 
@@ -216,14 +220,16 @@ python -m modules.wssis.run_experiment --list
 
 ### Execution plan (recommended — True SWSIS)
 
-| Phase | What | Command |
-| ----- | ---- | ------- |
-| **0. Smoke** | Sanity check all paths | `bash scripts/experiments/run_smoke_test.sh` |
-| **1. Prep** (once) | P0 + teacher AP | `bash scripts/prep/run_p0.sh --run-id $WSSIS_RUN_ID` |
-| **2A. Train** | 1A (4 GPU) + P0.4 GNN (1 GPU) | parallel terminals — see below |
-| **2B. Train** | 1C then 4A | `bash scripts/experiments/run_experiments_parallel.sh --run-id $WSSIS_RUN_ID` |
-| **3. Eval** | Student AP batch (1A, 1C, 4A) | `bash scripts/eval/run_all_experiment_eval.sh --run-id $WSSIS_RUN_ID --full-val` |
-| **4. Report item 2** | Teacher AP on 5% holdout | `bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID --stage1-holdout` |
+
+| Phase                | What                          | Command                                                                          |
+| -------------------- | ----------------------------- | -------------------------------------------------------------------------------- |
+| **0. Smoke**         | Sanity check all paths        | `bash scripts/experiments/run_smoke_test.sh`                                     |
+| **1. Prep** (once)   | P0 + teacher AP               | `bash scripts/prep/run_p0.sh --run-id $WSSIS_RUN_ID`                             |
+| **2A. Train**        | 1A (4 GPU) + P0.4 GNN (1 GPU) | parallel terminals — see below                                                   |
+| **2B. Train**        | 1C then 4A                    | `bash scripts/experiments/run_experiments_parallel.sh --run-id $WSSIS_RUN_ID`    |
+| **3. Eval**          | Student AP batch (1A, 1C, 4A) | `bash scripts/eval/run_all_experiment_eval.sh --run-id $WSSIS_RUN_ID --full-val` |
+| **4. Report item 2** | Teacher AP on 5% holdout      | `bash scripts/eval/run_teacher_eval.sh --run-id $WSSIS_RUN_ID --stage1-holdout`  |
+
 
 **Report item 5 (upper bound):** reuse existing full-supervised Mask2Former run as **1D** — do not re-run.
 
@@ -251,14 +257,15 @@ python -m modules.wssis.run_experiment --exp 4A --stage train --run-id $WSSIS_RU
 
 ### Single experiment (active IDs)
 
-| Command | Experiment |
-| ------- | ---------- |
-| `python -m modules.wssis.run_experiment --exp 1A --stage train` | **1A** — 5% supervised lower bound |
+
+| Command                                                         | Experiment                           |
+| --------------------------------------------------------------- | ------------------------------------ |
+| `python -m modules.wssis.run_experiment --exp 1A --stage train` | **1A** — 5% supervised lower bound   |
 | `python -m modules.wssis.run_experiment --exp 1C --stage train` | **1C** — true semi-weak SWSIS (main) |
-| `python -m modules.wssis.run_experiment --exp 4A --stage train` | **4A** — YOLOv8-seg semi-weak |
+| `python -m modules.wssis.run_experiment --exp 4A --stage train` | **4A** — YOLOv8-seg semi-weak        |
+
 
 Archived scripts (`run_exp_1b.py`, `run_exp_2a.py`, …): see [report/ARCHIVED_EXPERIMENTS.md](../report/ARCHIVED_EXPERIMENTS.md).
-
 
 Dry-run (print commands only):
 
@@ -306,11 +313,13 @@ bash scripts/experiments/run_experiments_parallel.sh --jobs 4 --run-id $WSSIS_RU
 
 Override detection: `export WSSIS_GPU_COUNT=4`
 
-| Phase | Experiments | GPUs (example: 4-GPU node) |
-| ----- | ----------- | ---------------------------- |
-| **1** | **1A** (labeled baseline) | All 4 |
-| **2** | **1C** (semi-weak M2F) | All 4 |
-| **3** | **4A** (semi-weak YOLO) | 2 |
+
+| Phase | Experiments               | GPUs (example: 4-GPU node) |
+| ----- | ------------------------- | -------------------------- |
+| **1** | **1A** (labeled baseline) | All 4                      |
+| **2** | **1C** (semi-weak M2F)    | All 4                      |
+| **3** | **4A** (semi-weak YOLO)   | 2                          |
+
 
 Logs: `outputs/runs/<id>/logs/parallel/` (`exp_1C.all_gpus.log`, `exp_*.gpuN.log`).
 
@@ -403,7 +412,8 @@ bash scripts/package_results.sh --run-id $WSSIS_RUN_ID -o result.zip
 
 ### Logging during training
 
-- `sup_loss`, `semi_loss`, `distill_loss` (Stage-2, when integrated)
+- Stage-2 joint (1C/4A): `wssis/loss_teacher_pce`, `loss_teacher_sym`, `loss_teacher_feedback`, `loss_semi`, `wssis/sup_loss`
+- `USE_STAGE2_JOINT_LOSS=true`; feature distillation removed
 - GNN `sym_loss`, `partial_ce`, agreement rate
 - GPU memory, time/epoch
 
@@ -452,18 +462,18 @@ wssis/
 ## Troubleshooting
 
 
-| Issue                          | Fix                                                        |
-| ------------------------------ | ---------------------------------------------------------- |
-| `_CONDA_PYTHON_SYSCONFIGDATA_NAME_USED: unbound variable` on `conda activate` | Fixed in repo scripts via `scripts/lib/activate_wssis.sh`; sync repo (include `scripts/lib/`) then re-run |
-| `ModuleNotFoundError: modules` | `export PYTHONPATH=$PWD` from repo root                    |
-| Kaggle 403                     | Check `data/kaggle.json` permissions and API token         |
-| CUDA OOM on P0.2               | `--limit 100` for testing; reduce batch size               |
-| Detectron2 import error        | Re-run `00_create_conda_env.sh` or `pip install --no-build-isolation -e modules/detectron2` |
-| PyTorch / CUDA mismatch        | Reinstall with `WSSIS_PYTORCH_INDEX` + matching `WSSIS_TORCH_VERSION` env vars            |
-| Mask2Former config missing     | Add COCO configs under `modules/mask2former/configs/coco/` |
-| `MultiScaleDeformableAttention` import error | `bash scripts/setup/03_compile_mask2former_ops.sh`; verify with `python -c "from modules.wssis.mask2former_ops import verify_msda_import; verify_msda_import()"` |
-| Experiments marked `done` but never trained | Edit `outputs/runs/<id>/progress.json` — remove `exp_*` / set `"status": "failed"` — then re-run without `--resume` or delete those keys |
-| `--parallel` used 5 GPUs on a 4-GPU node | Use `--parallel` (auto) or `--parallel 4`; scripts now clamp to visible GPU count |
+| Issue                                                                         | Fix                                                                                                                                                              |
+| ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `_CONDA_PYTHON_SYSCONFIGDATA_NAME_USED: unbound variable` on `conda activate` | Fixed in repo scripts via `scripts/lib/activate_wssis.sh`; sync repo (include `scripts/lib/`) then re-run                                                        |
+| `ModuleNotFoundError: modules`                                                | `export PYTHONPATH=$PWD` from repo root                                                                                                                          |
+| Kaggle 403                                                                    | Check `data/kaggle.json` permissions and API token                                                                                                               |
+| CUDA OOM on P0.2                                                              | `--limit 100` for testing; reduce batch size                                                                                                                     |
+| Detectron2 import error                                                       | Re-run `00_create_conda_env.sh` or `pip install --no-build-isolation -e modules/detectron2`                                                                      |
+| PyTorch / CUDA mismatch                                                       | Reinstall with `WSSIS_PYTORCH_INDEX` + matching `WSSIS_TORCH_VERSION` env vars                                                                                   |
+| Mask2Former config missing                                                    | Add COCO configs under `modules/mask2former/configs/coco/`                                                                                                       |
+| `MultiScaleDeformableAttention` import error                                  | `bash scripts/setup/03_compile_mask2former_ops.sh`; verify with `python -c "from modules.wssis.mask2former_ops import verify_msda_import; verify_msda_import()"` |
+| Experiments marked `done` but never trained                                   | Edit `outputs/runs/<id>/progress.json` — remove `exp_*` / set `"status": "failed"` — then re-run without `--resume` or delete those keys                         |
+| `--parallel` used 5 GPUs on a 4-GPU node                                      | Use `--parallel` (auto) or `--parallel 4`; scripts now clamp to visible GPU count                                                                                |
 
 
 ---

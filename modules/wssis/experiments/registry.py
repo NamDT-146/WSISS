@@ -32,6 +32,7 @@ class ExperimentSpec:
     stage2_epochs: int = 50
     use_semi_weak: bool = False
     freeze_gnn: bool = False
+    use_stage2_joint_loss: bool = False
     notes: str = ""
 
 
@@ -57,12 +58,13 @@ EXPERIMENTS: Dict[str, ExperimentSpec] = {
         labeled_split="labeled_5pct",
         weak_split="weak_95pct",
         use_gnn=True,
-        use_distillation=True,
+        use_distillation=False,
         use_symmetric_loss=False,
         weak_signal="per_image",
         use_semi_weak=True,
         freeze_gnn=False,
-        notes="50/50 labeled+weak; one weak type per weak image (weak_95pct_signal.json).",
+        use_stage2_joint_loss=True,
+        notes="50/50 labeled+weak; joint PCE/sym/feedback teacher + sup/unsup/semi student.",
     ),
     "1D": ExperimentSpec(
         id="1D",
@@ -85,11 +87,12 @@ EXPERIMENTS: Dict[str, ExperimentSpec] = {
         labeled_split="labeled_5pct",
         weak_split="weak_95pct",
         use_gnn=True,
-        use_distillation=True,
+        use_distillation=False,
         weak_signal="per_image",
         use_semi_weak=True,
         freeze_gnn=False,
-        notes="Same teacher pipeline as 1C with YOLO student.",
+        use_stage2_joint_loss=True,
+        notes="Same joint Stage-2 loss loop as 1C with YOLOv8-seg student.",
     ),
 }
 

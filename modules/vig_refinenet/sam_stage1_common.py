@@ -278,8 +278,7 @@ def generate_pseudo_label_from_logits(
     )
 
 
-@torch.no_grad()
-def forward_teacher_objects(
+def forward_teacher_objects_impl(
     sam_model: nn.Module,
     gnn_model: Optional[nn.Module],
     image: torch.Tensor,
@@ -295,17 +294,20 @@ def forward_teacher_objects(
     use_sam_cache: bool = True,
     confidence_threshold: Optional[float] = None,
     threshold_policy=None,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    prompts_override: Optional[list] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Teacher forward for one image with N objects.
+    Differentiable teacher forward for one image with N objects.
 
     Returns:
         pseudo_masks: [N, 1, mask_size, mask_size]
         raw_sam_best: [N, 1, mask_size, mask_size]
-        refined_logits: [N, 1, mask_size, mask_size]
+        refined_logits: [N, C, mask_size, mask_size] (C=1 or 3)
+        sam_masks_3: [N, 3, mask_size, mask_size]
+        weak_signal: [N, 1, mask_size, mask_size]
     """
     from modules.wssis.sam_cache import fetch_sam_embeddings_batch
-    from modules.wssis.weak_prompts import build_image_prompts
+    from modules.wssis.weak_prompts import build_image_prompts, sam_prompt_for_signal
 
     device = image.device
     n = object_masks.shape[0]
@@ -313,14 +315,16 @@ def forward_teacher_objects(
         (object_masks[i].detach().cpu().numpy() > 0.5).astype(np.uint8)
         for i in range(n)
     ]
-    from modules.wssis.weak_prompts import sam_prompt_for_signal
 
-    prompts = build_image_prompts(
-        mask_np_list,
-        policy=prompt_policy,
-        signal_type=signal_type,
-        ann_ids=meta.get("ann_ids"),
-    )
+    if prompts_override is not None:
+        prompts = prompts_override
+    else:
+        prompts = build_image_prompts(
+            mask_np_list,
+            policy=prompt_policy,
+            signal_type=signal_type,
+            ann_ids=meta.get("ann_ids"),
+        )
     sam_prompts = [sam_prompt_for_signal(p, signal_type) for p in prompts]
     image_batch = image.unsqueeze(0).expand(n, -1, -1, -1)
     metas = [
@@ -331,24 +335,24 @@ def forward_teacher_objects(
         }
         for i in range(n)
     ]
-    masks_batch = object_masks.unsqueeze(1) if object_masks.dim() == 3 else object_masks
 
-    sam_embed, _ = fetch_sam_embeddings_batch(
-        metas,
-        sam_model,
-        image_batch,
-        pixel_mean,
-        pixel_std,
-        use_cache=use_sam_cache,
-    )
-    sam_masks_3, sam_scores = decode_sam_masks_3_batch(
-        sam_model,
-        image_batch,
-        sam_prompts,
-        mask_size=mask_size,
-        prompt_space=mask_size,
-        image_embeddings=sam_embed,
-    )
+    with torch.no_grad():
+        sam_embed, _ = fetch_sam_embeddings_batch(
+            metas,
+            sam_model,
+            image_batch,
+            pixel_mean,
+            pixel_std,
+            use_cache=use_sam_cache,
+        )
+        sam_masks_3, sam_scores = decode_sam_masks_3_batch(
+            sam_model,
+            image_batch,
+            sam_prompts,
+            mask_size=mask_size,
+            prompt_space=mask_size,
+            image_embeddings=sam_embed,
+        )
     weak_signal = build_weak_signal_tensor(
         prompts,
         spatial_size=mask_size,
@@ -368,6 +372,44 @@ def forward_teacher_objects(
         threshold_policy=threshold_policy,
     )
     raw_best = _best_mask_by_score(sam_masks_3, sam_scores)
+    return pseudo, raw_best, refined_logits, sam_masks_3, weak_signal
+
+
+@torch.no_grad()
+def forward_teacher_objects(
+    sam_model: nn.Module,
+    gnn_model: Optional[nn.Module],
+    image: torch.Tensor,
+    object_masks: torch.Tensor,
+    pixel_mean: torch.Tensor,
+    pixel_std: torch.Tensor,
+    mask_size: int,
+    meta: dict,
+    *,
+    prompt_policy: str = "train_online",
+    signal_type: str = "mixed",
+    use_gnn: bool = True,
+    use_sam_cache: bool = True,
+    confidence_threshold: Optional[float] = None,
+    threshold_policy=None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Eval/inference wrapper (no grad)."""
+    pseudo, raw_best, refined_logits, _, _ = forward_teacher_objects_impl(
+        sam_model,
+        gnn_model,
+        image,
+        object_masks,
+        pixel_mean,
+        pixel_std,
+        mask_size,
+        meta,
+        prompt_policy=prompt_policy,
+        signal_type=signal_type,
+        use_gnn=use_gnn,
+        use_sam_cache=use_sam_cache,
+        confidence_threshold=confidence_threshold,
+        threshold_policy=threshold_policy,
+    )
     return pseudo, raw_best, refined_logits
 
 

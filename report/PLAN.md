@@ -314,45 +314,26 @@ for images, weak_prompts, gt_masks in dataloader_5percent:
     optimizer_gnn.step()
 ```
 
-#### D. Stage 2: SWSIS Training Loop
+#### D. Stage 2: SWSIS Training Loop (implemented — see [STAGE2_PROPOSAL.md](STAGE2_PROPOSAL.md))
 
 ```python
-mask2former.train()
-gnn_refiner.eval()  # frozen by default; requires_grad=False
-projector.train()
-
-opt_m2f = torch.optim.AdamW(list(mask2former.parameters()) + list(projector.parameters()), lr=1e-4)
-
-for batch_labeled, batch_weak in dataloader_swsis:
-    img_lbl_640, gt_masks = batch_labeled
-    img_weak_640, weak_prompts, weak_signals_for_loss = batch_weak
-
-    with torch.no_grad():
-        sam_embed_weak = load_cached_embedding(weak_image_ids)
-        sam_masks_3_weak = sam.prompt_decoder(sam_embed_weak, weak_prompts)
-
-    with torch.no_grad():  # frozen GNN
-        refined_masks_3_weak = gnn_refiner(sam_embed_weak, weak_prompts, sam_masks_3_weak)
-    pseudo_gt_weak = generate_pseudo_label(refined_masks_3_weak)
-
-    combined_images_640 = torch.cat([img_lbl_640, img_weak_640], dim=0)
-    m2f_outputs, m2f_features = mask2former(combined_images_640, return_features=True)
-
-    batch_size = img_lbl_640.size(0)
-    m2f_out_lbl = {k: v[:batch_size] for k, v in m2f_outputs.items()}
-    m2f_out_weak = {k: v[batch_size:] for k, v in m2f_outputs.items()}
-
-    loss_sup_full = mask2former_loss(m2f_out_lbl, gt_masks)
-    m2f_stride16_weak = m2f_features['res3'][batch_size:]
-    aligned_m2f_weak = projector(m2f_stride16_weak)
-    loss_distill = feature_distillation_loss(aligned_m2f_weak, sam_embed_weak.detach())
-    loss_semi = mask2former_loss(m2f_out_weak, pseudo_gt_weak)
-    loss_sup_weak = partial_ce_loss(m2f_out_weak, weak_signals_for_loss)
-
-    loss_m2f_total = loss_sup_full + loss_semi + loss_sup_weak + loss_distill
-    opt_m2f.zero_grad()
-    loss_m2f_total.backward()
-    opt_m2f.step()
+# SAM frozen; GNN trainable (GNN_LR=1e-5); feature distillation removed.
+for step, batch in enumerate(dataloader_swsis):  # 50/50 labeled / weak
+    w = loss_schedule.weights(step, max_iter)
+    for rec in batch:
+        dual = build_dual_views(read_image(rec))  # weak→teacher, strong→student
+        if rec.labeled:
+            targets = warp_gt_instances(dual.geom)
+        else:
+            sam3, refined, weak = teacher.forward_trainable(dual.image_weak, ...)
+            L_t += w["λ_t1"] * pce(refined, weak) + w["λ_t2"] * sym(sam3)
+            targets = vote_pseudo_instances(sam3, thresh=0.9, vote_min=2)
+        head = student_head(dual.image_strong)
+        L_s += w["λ_s1"] * m2f_loss(head, targets)
+        L_s += w["λ_s3"] * semi_pce(best_mask(head), jittered_weak)
+        L_t += w["λ_t3"] * feedback(refined, student_mask.detach())
+    (L_t + L_s).backward()
+    opt_student.step(); opt_gnn.step()
 ```
 
 #### E. Multi-Instance Handling

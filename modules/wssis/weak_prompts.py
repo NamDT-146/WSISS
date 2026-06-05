@@ -23,6 +23,75 @@ WEAK_SIGNAL_TYPES: Tuple[str, ...] = ("boxes_only", "points_only", "scribbles_on
 
 # Default Gaussian sigma (pixels) for point / scribble widening
 DEFAULT_GAUSSIAN_SIGMA = 4.0
+DEFAULT_POINT_JITTER_PX = 5
+DEFAULT_BOX_EXPAND_RATIO = 0.05
+DEFAULT_SCRIBBLE_TRIM_RATIO = 0.15
+
+
+def jitter_box_expand(
+    bbox_xywh: List[float],
+    expand_ratio: float = DEFAULT_BOX_EXPAND_RATIO,
+    img_hw: Optional[Tuple[int, int]] = None,
+) -> List[float]:
+    """Expand box only (never shrink); outside remains strict background."""
+    x, y, bw, bh = bbox_xywh
+    dx = bw * expand_ratio
+    dy = bh * expand_ratio
+    x0 = x - dx
+    y0 = y - dy
+    bw2 = bw + 2 * dx
+    bh2 = bh + 2 * dy
+    if img_hw is not None:
+        h, w = img_hw
+        x0 = max(0.0, x0)
+        y0 = max(0.0, y0)
+        bw2 = min(bw2, w - x0)
+        bh2 = min(bh2, h - y0)
+    return [float(x0), float(y0), float(bw2), float(bh2)]
+
+
+def jitter_point_manhattan(
+    point: Tuple[float, float],
+    radius: int = DEFAULT_POINT_JITTER_PX,
+    rng: Optional[np.random.RandomState] = None,
+    img_hw: Optional[Tuple[int, int]] = None,
+) -> Tuple[float, float]:
+    rng = rng or np.random.RandomState()
+    px, py = point
+    px += float(rng.randint(-radius, radius + 1))
+    py += float(rng.randint(-radius, radius + 1))
+    if img_hw is not None:
+        h, w = img_hw
+        px = float(np.clip(px, 0, w - 1))
+        py = float(np.clip(py, 0, h - 1))
+    return px, py
+
+
+def jitter_scribble_trim(
+    scribble_mask: np.ndarray,
+    trim_ratio: float = DEFAULT_SCRIBBLE_TRIM_RATIO,
+    rng: Optional[np.random.RandomState] = None,
+) -> np.ndarray:
+    """Trim head or tail segment (10–20% default) from scribble polyline mask."""
+    rng = rng or np.random.RandomState()
+    ys, xs = np.where(scribble_mask > 0)
+    if len(xs) < 2:
+        return scribble_mask
+    coords = np.stack([ys, xs], axis=1)
+    # order along principal axis
+    cy, cx = coords[:, 0].mean(), coords[:, 1].mean()
+    proj = (coords[:, 1] - cx) * 1.0 + (coords[:, 0] - cy) * 0.0
+    order = np.argsort(proj)
+    n = len(order)
+    cut = max(1, int(round(n * trim_ratio)))
+    if rng.rand() < 0.5:
+        keep = order[cut:]
+    else:
+        keep = order[:-cut]
+    out = np.zeros_like(scribble_mask)
+    for idx in keep:
+        out[coords[idx, 0], coords[idx, 1]] = 1
+    return out
 
 
 def mask_centroid_point(mask: np.ndarray) -> Tuple[float, float]:
@@ -274,10 +343,9 @@ def build_instance_prompts(
             }
         return base
 
-    # train_online
+    # train_online (Stage-2 jitter policy)
     if signal_type == "boxes_only":
-        jitter = rng.randint(-5, 6, size=4)
-        b = [bbox[0] + jitter[0], bbox[1] + jitter[1], bbox[2], bbox[3]]
+        b = jitter_box_expand(bbox, img_hw=(h, w))
         return {"bbox": b, "ann_id": ann_id, "signal_type": "box"}
 
     if signal_type == "points_only":
@@ -287,6 +355,7 @@ def build_instance_prompts(
         else:
             idx = rng.randint(0, len(xs))
             px, py = float(xs[idx]), float(ys[idx])
+        px, py = jitter_point_manhattan((px, py), img_hw=(h, w), rng=rng)
         return {
             "point": [px, py],
             "ann_id": ann_id,
@@ -295,12 +364,15 @@ def build_instance_prompts(
 
     if signal_type == "scribbles_only":
         scrib = generate_scribble_mask(mask, policy=policy, rng=rng, ann_id=ann_id)
+        trim_r = float(rng.uniform(0.10, 0.20))
+        scrib = jitter_scribble_trim(scrib, trim_ratio=trim_r, rng=rng)
         sp = mask_centroid_point(scrib) if scrib.max() else mask_interior_point(mask)
         return {
             "point": [sp[0], sp[1]],
             "bbox": bbox,
             "ann_id": ann_id,
             "signal_type": "scribble",
+            "scribble_mask": scrib,
         }
 
     # mixed: random point with jitter (+ all channels populated at rasterize)
@@ -310,10 +382,7 @@ def build_instance_prompts(
     else:
         idx = rng.randint(0, len(xs))
         px, py = float(xs[idx]), float(ys[idx])
-    px += rng.uniform(-5, 5)
-    py += rng.uniform(-5, 5)
-    px = float(np.clip(px, 0, w - 1))
-    py = float(np.clip(py, 0, h - 1))
+    px, py = jitter_point_manhattan((px, py), img_hw=(h, w), rng=rng)
     return {
         "point": [px, py],
         "bbox": bbox,

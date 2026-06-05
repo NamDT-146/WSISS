@@ -92,6 +92,7 @@ def _write_experiment_config(spec: ExperimentSpec, out_dir: Path, ctx: Optional[
         "use_gnn": spec.use_gnn,
         "use_raw_sam_only": spec.use_raw_sam_only,
         "use_distillation": spec.use_distillation,
+        "use_stage2_joint_loss": spec.use_stage2_joint_loss,
         "use_symmetric_loss": spec.use_symmetric_loss,
         "weak_signal": spec.weak_signal,
         "use_semi_weak": spec.use_semi_weak,
@@ -210,10 +211,17 @@ WSSIS:
   LABELED_SPLIT: "{spec.labeled_split}"
   WEAK_SPLIT: "{spec.weak_split}"
   USE_GNN: {str(spec.use_gnn).lower()}
-  USE_DISTILL: {str(spec.use_distillation).lower()}
-  DISTILL_WEIGHT: 1.0
-  DISTILL_BACKBONE_FEAT: "res4"
+  USE_STAGE2_JOINT_LOSS: {str(spec.use_stage2_joint_loss).lower()}
   USE_SEMI_WEAK: {str(spec.use_semi_weak).lower()}
+  LOSS_WARMUP_FRAC: 0.2
+  LAMBDA_T_PCE: 1.0
+  LAMBDA_T_SYM: 0.1
+  LAMBDA_T_FEEDBACK: 0.05
+  LAMBDA_S_SUP: 1.0
+  LAMBDA_S_UNSUP: 1.0
+  LAMBDA_S_SEMI: 0.5
+  FEEDBACK_THRESHOLD: 0.95
+  PSEUDO_VOTE_MIN: 2
   USE_RAW_SAM_ONLY: {str(spec.use_raw_sam_only).lower()}
   FREEZE_GNN: {str(spec.freeze_gnn).lower()}
   WEAK_SIGNAL: "{spec.weak_signal}"
@@ -286,45 +294,19 @@ SOLVER:
 
 
 def _yolo_train(spec: ExperimentSpec, out_dir: Path, dry_run: bool = False) -> None:
-    try:
-        from ultralytics import YOLO
-    except ImportError as e:
-        raise ImportError("Install ultralytics for Exp 4A: pip install ultralytics") from e
-
-    from modules.wssis.yolo_export import prepare_yolo_semi_weak_dataset
+    from modules.wssis.training.stage2_yolo import train_stage2_yolo
 
     apply_smoke_env()
     smoke = get_smoke_profile()
-    paths = build_coco_paths()
-    export_dir = out_dir / "yolo_export"
-    print(
-        "[stage2] Preparing YOLO dataset (labeled GT + weak pseudo-labels via SAM/GNN). "
-        "This runs before ultralytics training and may take a while on weak_95pct."
-    )
-    data_yaml = prepare_yolo_semi_weak_dataset(
-        export_dir,
-        spec,
-        max_images=smoke.max_images if smoke else None,
-    )
-    print(f"[stage2] YOLO data config written: {data_yaml}")
     if dry_run:
+        print("[stage2] YOLO joint training dry-run OK (stage2_yolo.train_stage2_yolo)")
         return
-    epochs = spec.stage2_epochs
-    batch = 32
-    if smoke:
-        epochs = smoke.yolo_epochs
-        batch = smoke.batch_size
-    model = YOLO("yolov8n-seg.pt")
-    imgsz = STAGE2_STUDENT_IMAGE_SIZE if not smoke else get_smoke_profile().m2f_image_size
-    model.train(
-        data=str(data_yaml),
-        epochs=epochs,
-        batch=batch,
-        imgsz=imgsz,
-        patience=STAGE2_EARLY_STOP_PATIENCE if not smoke else 0,
-        project=str(out_dir),
-        name="yolov8_seg",
-        exist_ok=True,
+    train_stage2_yolo(
+        spec,
+        out_dir,
+        epochs=spec.stage2_epochs if not smoke else smoke.yolo_epochs,
+        batch_size=32 if not smoke else smoke.batch_size,
+        imgsz=STAGE2_STUDENT_IMAGE_SIZE if not smoke else smoke.m2f_image_size,
     )
 
 

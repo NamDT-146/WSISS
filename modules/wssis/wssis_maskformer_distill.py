@@ -1,4 +1,8 @@
-"""Feature distillation: align Swin stride-16 features with P0.2 SAM embeddings."""
+"""
+DEPRECATED: Feature distillation removed in Stage-2 joint loss (STAGE2_PROPOSAL).
+
+Kept for backward compatibility only; ``attach_wssis_distillation`` is no longer called.
+"""
 
 from __future__ import annotations
 

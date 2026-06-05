@@ -11,6 +11,7 @@ import torch.nn as nn
 
 from modules.vig_refinenet.sam_stage1_common import (
     forward_teacher_objects,
+    forward_teacher_objects_impl,
     get_sam_pixel_stats,
     load_sam_vit_b,
 )
@@ -44,16 +45,23 @@ class WssisTeacherStack(nn.Module):
         ckpt_run_config: dict | None = None
         sam_path = sam_vit_b_checkpoint()
         self.sam = load_sam_vit_b(str(sam_path), device)
+        for p in self.sam.parameters():
+            p.requires_grad = False
         self.pixel_mean, self.pixel_std = get_sam_pixel_stats(device)
         self.gnn = None
         if use_gnn:
             ckpt = gnn_ckpt_path or gnn_checkpoint()
-            cfg = {"model": {"mask_size": mask_size, "num_output_masks": 1, "num_sam_mask_inputs": 3}}
-            self.gnn = build_sam_stage1_refiner(cfg).to(device)
             state = torch.load(ckpt, map_location=device, weights_only=False)
+            ckpt_run_config = state.get("config") or {}
+            build_cfg = dict(ckpt_run_config)
+            model_cfg = dict(build_cfg.get("model") or {})
+            model_cfg["mask_size"] = mask_size
+            model_cfg.setdefault("num_sam_mask_inputs", 3)
+            model_cfg.setdefault("num_output_masks", 3)
+            build_cfg["model"] = model_cfg
+            self.gnn = build_sam_stage1_refiner(build_cfg).to(device)
             sd = state.get("state_dict", state)
             self.gnn.load_state_dict(sd, strict=False)
-            ckpt_run_config = state.get("config")
             if freeze_gnn:
                 for p in self.gnn.parameters():
                     p.requires_grad = False
@@ -133,6 +141,37 @@ class WssisTeacherStack(nn.Module):
             out_masks.append(m)
         cats = meta.get("category_ids", [0] * len(out_masks))
         return out_masks, cats
+
+    def forward_trainable(
+        self,
+        image: torch.Tensor,
+        object_masks: torch.Tensor,
+        meta: dict,
+        *,
+        prompt_policy: str = "train_online",
+        signal_type: str = "mixed",
+        use_sam_cache: bool = True,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Differentiable forward for Stage-2 joint training.
+
+        Returns pseudo, refined_logits, sam_masks_3, weak_signal.
+        """
+        return forward_teacher_objects_impl(
+            self.sam,
+            self.gnn if self.use_gnn else None,
+            image.to(self.device),
+            object_masks,
+            self.pixel_mean,
+            self.pixel_std,
+            self.mask_size,
+            meta,
+            prompt_policy=prompt_policy,
+            signal_type=signal_type,
+            use_gnn=self.use_gnn,
+            use_sam_cache=use_sam_cache,
+            threshold_policy=self.threshold_policy,
+        )
 
     def forward_teacher_on_batch(
         self,
