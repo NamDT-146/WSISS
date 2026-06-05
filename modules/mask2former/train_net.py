@@ -380,9 +380,12 @@ class Trainer(DefaultTrainer):
             _student_head_outputs,
         )
 
+        inner = self._trainer
+        inner.iter = self.iter
+
         assert self.model.training
         start = time.perf_counter()
-        data = next(self._data_loader_iter)
+        data = next(inner._data_loader_iter)
         data_time = time.perf_counter() - start
 
         data, teacher_losses = WssisStage2TrainerMixin._wssis_prepare_joint_batch(self, data)
@@ -410,7 +413,8 @@ class Trainer(DefaultTrainer):
         if self._wssis_teacher_opt is not None:
             self._wssis_teacher_opt.zero_grad()
         losses.backward()
-        self._write_metrics(loss_dict, data_time)
+        inner.after_backward()
+        inner._write_metrics(loss_dict, data_time)
         self.optimizer.step()
         if self._wssis_teacher_opt is not None:
             self._wssis_teacher_opt.step()
