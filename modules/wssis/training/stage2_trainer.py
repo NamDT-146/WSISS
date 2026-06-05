@@ -49,6 +49,15 @@ def _first_gt_mask_tensor(gt_masks) -> torch.Tensor:
     return gt_masks.tensor[0].float()
 
 
+def _empty_instances(h: int, w: int, device: torch.device) -> Instances:
+    """Mask2Former prepare_targets requires gt_masks/gt_classes even with zero objects."""
+    inst = Instances((h, w))
+    inst.gt_boxes = Boxes(torch.zeros((0, 4), dtype=torch.float32, device=device))
+    inst.gt_classes = torch.zeros(0, dtype=torch.int64, device=device)
+    inst.gt_masks = torch.zeros((0, h, w), dtype=torch.uint8, device=device)
+    return inst
+
+
 def _masks_to_instances(
     masks: List[np.ndarray],
     cats: List[int],
@@ -57,7 +66,7 @@ def _masks_to_instances(
 ) -> Instances:
     h, w = image_size
     if not masks:
-        return Instances((h, w))
+        return _empty_instances(h, w, device)
     boxes = []
     bitmask_list = []
     classes = []
@@ -71,7 +80,7 @@ def _masks_to_instances(
         bitmask_list.append(mask.astype(np.uint8))
         classes.append(int(cat) if cat else 1)
     if not boxes:
-        return Instances((h, w))
+        return _empty_instances(h, w, device)
     inst = Instances((h, w))
     inst.gt_boxes = Boxes(torch.tensor(boxes, dtype=torch.float32, device=device))
     inst.gt_classes = torch.tensor(classes, dtype=torch.int64, device=device)
@@ -175,15 +184,19 @@ class WssisStage2TrainerMixin:
                     warped = [apply_geom_transform_to_mask(m, dual.geom) for m in masks_np]
                     cats = inst.gt_classes.cpu().tolist()
                     rec["instances"] = _masks_to_instances(warped, cats, (h_s, w_s), device)
+                else:
+                    rec["instances"] = _empty_instances(h_s, w_s, device)
                 continue
 
             anns = rec.get("wssis_teacher_anns") or []
             if not anns:
+                rec["instances"] = _empty_instances(h_s, w_s, device)
                 continue
             mask_np_list, ann_ids, cats = coco_anns_to_masks_for_image(
                 anns, image_rgb.shape[0], image_rgb.shape[1], max_objects=8
             )
             if not mask_np_list:
+                rec["instances"] = _empty_instances(h_s, w_s, device)
                 continue
             warped_masks = [apply_geom_transform_to_mask(m, dual.geom) for m in mask_np_list]
             masks_t = torch.stack(
