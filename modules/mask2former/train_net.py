@@ -373,7 +373,7 @@ class Trainer(DefaultTrainer):
     def _run_step_joint(self) -> None:
         import time
 
-        from detectron2.modeling import ImageList
+        from detectron2.structures import ImageList
 
         from modules.wssis.training.stage2_trainer import (
             WssisStage2TrainerMixin,

@@ -11,8 +11,7 @@ import torch
 import torch.nn.functional as F
 
 from detectron2.data import detection_utils as utils
-from detectron2.modeling import ImageList
-from detectron2.structures import BitMasks, Boxes, Instances
+from detectron2.structures import BitMasks, Boxes, ImageList, Instances
 
 from modules.wssis.mask2former_datasets import coco_anns_to_masks_for_image
 from modules.wssis.pseudo_label_confidence import refined_probs_from_logits
