@@ -5,8 +5,11 @@ Stage-2 joint teacher-student training for YOLOv8-seg (Exp 4A).
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from typing import List, Optional
+
+from tqdm import tqdm
 
 import numpy as np
 import torch
@@ -161,8 +164,25 @@ def train_stage2_yolo(
     ckpt_dir = out_dir / "yolov8_seg" / "weights"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    for epoch in range(1, epochs + 1):
-        for batch_recs in loader:
+    print(
+        f"[stage2-yolo] start: epochs={epochs} batches/epoch={len(loader)} "
+        f"total_steps={total_steps} batch_size={batch_size} imgsz={imgsz}"
+    )
+    train_t0 = time.perf_counter()
+
+    epoch_pbar = tqdm(range(1, epochs + 1), desc="Stage-2 YOLO", unit="epoch")
+    for epoch in epoch_pbar:
+        epoch_loss_sum = 0.0
+        n_train_steps = 0
+        epoch_t0 = time.perf_counter()
+
+        train_pbar = tqdm(
+            loader,
+            desc=f"Epoch {epoch}/{epochs}",
+            leave=False,
+            unit="batch",
+        )
+        for batch_recs in train_pbar:
             step += 1
             weights = schedule.weights(step, total_steps)
             loss_total = torch.tensor(0.0, device=device)
@@ -281,6 +301,25 @@ def train_stage2_yolo(
             student_opt.step()
             if teacher_opt is not None:
                 teacher_opt.step()
+
+            loss_val = float(loss_total.detach().item())
+            epoch_loss_sum += loss_val
+            n_train_steps += 1
+            train_pbar.set_postfix(
+                loss=f"{loss_val:.4f}",
+                step=f"{step}/{total_steps}",
+            )
+
+        epoch_elapsed = time.perf_counter() - epoch_t0
+        mean_loss = epoch_loss_sum / max(n_train_steps, 1)
+        elapsed_total = time.perf_counter() - train_t0
+        eta_s = (elapsed_total / epoch) * (epochs - epoch) if epoch > 0 else 0.0
+        epoch_pbar.set_postfix(loss=f"{mean_loss:.4f}", eta=f"{eta_s / 60:.1f}m")
+        print(
+            f"[stage2-yolo] epoch {epoch}/{epochs} "
+            f"mean_loss={mean_loss:.4f} train_steps={n_train_steps} "
+            f"elapsed={epoch_elapsed:.1f}s eta={eta_s / 60:.1f}m"
+        )
 
         torch.save(
             {
