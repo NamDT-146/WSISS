@@ -232,14 +232,14 @@ WSSIS:
   LAMBDA_S_UNSUP: 1.0
   LAMBDA_S_SEMI: 0.5
   FEEDBACK_THRESHOLD: 0.95
-  PSEUDO_VOTE_MIN: 1
+  PSEUDO_VOTE_MIN: 2
   USE_RAW_SAM_ONLY: {str(spec.use_raw_sam_only).lower()}
   FREEZE_GNN: {str(spec.freeze_gnn).lower()}
   WEAK_SIGNAL: "{spec.weak_signal}"
   GNN_CHECKPOINT: "{gnn_ckpt.as_posix()}"
   GNN_WARMUP_ITERS: 200
-  PSEUDO_THRESHOLD_MODE: "fixed"
-  PSEUDO_CONFIDENCE_THRESHOLD: 0.5
+  PSEUDO_THRESHOLD_MODE: "adamatch"
+  PSEUDO_CONFIDENCE_THRESHOLD: 0.9
   USE_FULL_VAL_FINAL: {str(use_full_val).lower()}
   ITERS_PER_EPOCH: {STAGE2_ITERS_PER_EPOCH}
   EARLY_STOPPING_PATIENCE: {early_patience}
