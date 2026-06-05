@@ -11,13 +11,13 @@ import torch
 import torch.nn.functional as F
 
 from detectron2.data import detection_utils as utils
-from detectron2.structures import BitMasks, Boxes, ImageList, Instances
+from detectron2.structures import Boxes, ImageList, Instances
 
 from modules.wssis.mask2former_datasets import coco_anns_to_masks_for_image
 from modules.wssis.pseudo_label_confidence import refined_probs_from_logits
 from modules.wssis.training.stage2_augment import apply_geom_transform_to_mask, build_dual_views
 from modules.wssis.training.stage2_losses import (
-    LossWeightSchedule,
+    LossWeightSchedule,x
     aggregate_refined_logits_per_image,
     aggregate_weak_signal_per_image,
     build_pce_valid_mask,
@@ -28,6 +28,20 @@ from modules.wssis.training.stage2_losses import (
     voting_pseudo_mask,
 )
 from modules.vig_refinenet.sam_stage1_common import forward_teacher_objects_impl
+
+
+def _gt_masks_to_numpy_list(gt_masks) -> List[np.ndarray]:
+    """Mask2Former mapper stores gt_masks as Tensor; Detectron2 uses BitMasks."""
+    if isinstance(gt_masks, torch.Tensor):
+        masks = gt_masks.detach().cpu().numpy()
+        return [masks[i] for i in range(masks.shape[0])]
+    return [m for m in gt_masks.tensor.cpu().numpy()]
+
+
+def _first_gt_mask_tensor(gt_masks) -> torch.Tensor:
+    if isinstance(gt_masks, torch.Tensor):
+        return gt_masks[0].float()
+    return gt_masks.tensor[0].float()
 
 
 def _masks_to_instances(
@@ -56,9 +70,10 @@ def _masks_to_instances(
     inst = Instances((h, w))
     inst.gt_boxes = Boxes(torch.tensor(boxes, dtype=torch.float32, device=device))
     inst.gt_classes = torch.tensor(classes, dtype=torch.int64, device=device)
-    inst.gt_masks = BitMasks(
-        torch.stack([torch.from_numpy(m) for m in bitmask_list], dim=0).to(device)
-    )
+    inst.gt_masks = torch.stack(
+        [torch.from_numpy(m.astype(np.uint8)) for m in bitmask_list],
+        dim=0,
+    ).to(device)
     return inst
 
 
@@ -150,7 +165,7 @@ class WssisStage2TrainerMixin:
             if is_labeled and "instances" in rec:
                 inst = rec["instances"].to(device)
                 if inst.has("gt_masks") and len(inst) > 0:
-                    masks_np = inst.gt_masks.tensor.cpu().numpy()
+                    masks_np = _gt_masks_to_numpy_list(inst.gt_masks)
                     warped = [apply_geom_transform_to_mask(m, dual.geom) for m in masks_np]
                     cats = inst.gt_classes.cpu().tolist()
                     rec["instances"] = _masks_to_instances(warped, cats, (h_s, w_s), device)
@@ -245,7 +260,7 @@ class WssisStage2TrainerMixin:
                 continue
             if len(rec["instances"]) == 0:
                 continue
-            tgt = rec["instances"].gt_masks.tensor[0].float()
+            tgt = _first_gt_mask_tensor(rec["instances"].gt_masks)
             pm = _best_query_mask(pred_masks[i], tgt)
             probs = pm.sigmoid()
             weak_sig = rec.get("wssis_weak_signal_type", "points_only")
