@@ -305,11 +305,21 @@ SOLVER:
         )
 
 
-def _yolo_train(spec: ExperimentSpec, out_dir: Path, dry_run: bool = False) -> None:
+def _yolo_train(
+    spec: ExperimentSpec,
+    out_dir: Path,
+    dry_run: bool = False,
+    run_ctx: Optional[RunContext] = None,
+) -> None:
     from modules.wssis.training.stage2_yolo import train_stage2_yolo
 
     apply_smoke_env()
     smoke = get_smoke_profile()
+    early_patience = STAGE2_EARLY_STOP_PATIENCE
+    use_full_val = True
+    if smoke:
+        early_patience = 0
+        use_full_val = smoke.m2f_use_full_val_final
     if dry_run:
         print("[stage2] YOLO joint training dry-run OK (stage2_yolo.train_stage2_yolo)")
         return
@@ -319,6 +329,9 @@ def _yolo_train(spec: ExperimentSpec, out_dir: Path, dry_run: bool = False) -> N
         epochs=spec.stage2_epochs if not smoke else smoke.yolo_epochs,
         batch_size=16 if not smoke else smoke.batch_size,
         imgsz=STAGE2_STUDENT_IMAGE_SIZE if not smoke else smoke.m2f_image_size,
+        run_ctx=run_ctx,
+        early_stop_patience=early_patience,
+        use_full_val_final=use_full_val,
     )
 
 
@@ -346,7 +359,7 @@ def train_experiment(
     if spec.student == "mask2former":
         _mask2former_train(spec, out_dir, dry_run=dry_run)
     elif spec.student == "yolov8":
-        _yolo_train(spec, out_dir, dry_run=dry_run)
+        _yolo_train(spec, out_dir, dry_run=dry_run, run_ctx=ctx)
     else:
         raise ValueError(f"Unknown student: {spec.student}")
 

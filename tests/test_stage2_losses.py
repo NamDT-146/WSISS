@@ -7,6 +7,7 @@ from modules.wssis.training.stage2_losses import (
     aggregate_weak_signal_per_image,
     build_pce_valid_mask,
     partial_bce_loss,
+    student_feedback_loss,
     symmetric_sam_triplet_loss,
     voting_pseudo_mask,
 )
@@ -79,3 +80,12 @@ def test_partial_bce_masked():
     loss = partial_bce_loss(logits, target, valid)
     assert loss.ndim == 0
     assert loss.item() > 0.0
+
+
+def test_student_feedback_loss_resizes_teacher_to_student():
+    """YOLO student at 512 vs teacher refined logits at 256 must not raise."""
+    teacher_logits = torch.randn(1, 1, 256, 256)
+    student_probs = torch.sigmoid(torch.randn(1, 1, 512, 512))
+    loss = student_feedback_loss(teacher_logits, student_probs, tau=0.95)
+    assert loss.ndim == 0
+    assert torch.isfinite(loss)

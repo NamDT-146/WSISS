@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
 
 from tqdm import tqdm
 
@@ -24,8 +24,15 @@ from modules.wssis.mask2former_datasets import coco_anns_to_masks_for_image
 from modules.wssis.mask2former_teacher import WssisTeacherStack
 from modules.wssis.paths import build_coco_paths, gnn_checkpoint, resolve_coco_image_dir
 from modules.wssis.pseudo_label_confidence import build_threshold_policy, refined_probs_from_logits
+from modules.wssis.run_context import EarlyStopping
 from modules.wssis.stage2_constants import STAGE2_STUDENT_IMAGE_SIZE
-from modules.wssis.training.stage2_augment import apply_geom_transform_to_mask, build_dual_views
+from modules.wssis.training.stage2_augment import (
+    GeomTransformParams,
+    IMAGENET_MEAN,
+    IMAGENET_STD,
+    apply_geom_transform_to_mask,
+    build_dual_views,
+)
 from modules.wssis.training.stage2_yolo_proto import yolo_mask_logits as _yolo_mask_logits
 from modules.wssis.training.stage2_losses import (
     LossWeightSchedule,
@@ -38,7 +45,14 @@ from modules.wssis.training.stage2_losses import (
     symmetric_sam_triplet_loss,
     voting_pseudo_mask,
 )
-from modules.vig_refinenet.sam_stage1_common import forward_teacher_objects_impl
+from modules.vig_refinenet.sam_stage1_common import (
+    compute_iou,
+    forward_teacher_objects_impl,
+    mask_ap_from_iou,
+)
+
+if TYPE_CHECKING:
+    from modules.wssis.run_context import RunContext
 
 
 class Stage2YoloDataset(Dataset):
@@ -99,10 +113,138 @@ def _union_mask(masks: List[np.ndarray], size: int) -> np.ndarray:
 
 
 def _identity_geom(out_size: int, src_shape: tuple):
-    from modules.wssis.training.stage2_augment import GeomTransformParams
-
     h, w = src_shape[:2]
     return GeomTransformParams(h, w, 0, 0, h, w, False, out_size)
+
+
+def _center_square_geom(h: int, w: int, out_size: int) -> GeomTransformParams:
+    """Deterministic center square crop for validation (no random aug)."""
+    side = min(h, w)
+    y0 = (h - side) // 2
+    x0 = (w - side) // 2
+    return GeomTransformParams(h, w, y0, x0, side, side, False, out_size)
+
+
+def _eval_image_tensor(image_rgb: np.ndarray, geom: GeomTransformParams) -> torch.Tensor:
+    from modules.wssis.training.stage2_augment import _apply_geom_to_rgb
+
+    arr = _apply_geom_to_rgb(image_rgb, geom)
+    img_t = torch.from_numpy(np.ascontiguousarray(arr)).permute(2, 0, 1).float() / 255.0
+    mean = torch.tensor(IMAGENET_MEAN).view(3, 1, 1)
+    std = torch.tensor(IMAGENET_STD).view(3, 1, 1)
+    return (img_t - mean) / std
+
+
+def _build_val_records(
+    spec: ExperimentSpec,
+    *,
+    val_image_txt,
+    val_ann: Path,
+    image_split: str,
+    max_images: Optional[int] = None,
+) -> List[dict]:
+    from modules.wssis.mask2former_datasets import _ensure_filtered_coco_json
+
+    paths = build_coco_paths()
+    cache_dir = paths["coco_root"].parent / "cache" / "stage2_yolo"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    scope = val_image_txt.stem
+    val_json = _ensure_filtered_coco_json(
+        val_ann,
+        val_image_txt,
+        cache_dir / f"val_{scope}_{spec.id}.json",
+    )
+    image_root = resolve_coco_image_dir(paths["coco_root"], image_split)
+    records = load_coco_json(str(val_json), str(image_root), f"wssis_yolo_v_{spec.id}_{scope}")
+    if max_images:
+        records = records[:max_images]
+    return records
+
+
+def evaluate_stage2_yolo_val(
+    student: torch.nn.Module,
+    mask_proj: torch.nn.Module,
+    val_records: List[dict],
+    *,
+    imgsz: int,
+    device: torch.device,
+    batch_size: int = 8,
+) -> Dict[str, float]:
+    """
+    Fast subset validation for in-training monitoring (parity with Mask2Former EVAL_PERIOD).
+
+    Uses union GT masks vs predicted union mask; reports COCO-style mask AP proxy per image.
+    """
+    if not val_records:
+        return {"segm/AP": 0.0, "segm/AP50": 0.0, "val_mask_iou": 0.0, "n_val_images": 0}
+
+    was_training = student.training
+    student.eval()
+    mask_proj.eval()
+
+    loader = DataLoader(
+        Stage2YoloDataset(val_records, Path(".")),
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=0,
+        collate_fn=lambda batch: batch,
+    )
+
+    iou_sum = 0.0
+    ap_sum = 0.0
+    ap50_sum = 0.0
+    n_images = 0
+
+    with torch.no_grad():
+        for batch_recs in loader:
+            images = []
+            targets = []
+            for rec in batch_recs:
+                file_name = rec.get("file_name")
+                if not file_name:
+                    continue
+                image_rgb = utils.read_image(file_name, format="RGB")
+                h, w = image_rgb.shape[:2]
+                geom = _center_square_geom(h, w, imgsz)
+                anns = rec.get("annotations") or []
+                mask_np_list, _, _ = coco_anns_to_masks_for_image(
+                    anns, h, w, max_objects=32
+                )
+                if not mask_np_list:
+                    continue
+                warped = [apply_geom_transform_to_mask(m, geom) for m in mask_np_list]
+                images.append(_eval_image_tensor(image_rgb, geom))
+                targets.append(_union_mask(warped, imgsz))
+
+            if not images:
+                continue
+
+            img_batch = torch.stack(images, dim=0).to(device)
+            pred = _yolo_mask_logits(student, mask_proj, img_batch, imgsz)
+            for i, tgt_np in enumerate(targets):
+                tgt_t = torch.from_numpy(tgt_np).to(device).unsqueeze(0).unsqueeze(0)
+                pm = pred[i : i + 1]
+                if pm.shape[-2:] != tgt_t.shape[-2:]:
+                    tgt_t = F.interpolate(tgt_t, size=pm.shape[-2:], mode="nearest")
+                iou = compute_iou(pm, tgt_t)
+                iou_sum += iou
+                ap_sum += mask_ap_from_iou(iou)
+                ap50_sum += 1.0 if iou >= 0.5 else 0.0
+                n_images += 1
+
+    if was_training:
+        student.train()
+        mask_proj.train()
+
+    if n_images == 0:
+        return {"segm/AP": 0.0, "segm/AP50": 0.0, "val_mask_iou": 0.0, "n_val_images": 0}
+
+    return {
+        "segm/AP": ap_sum / n_images,
+        "segm/AP50": ap50_sum / n_images,
+        "val_mask_iou": iou_sum / n_images,
+        "n_val_images": float(n_images),
+    }
 
 
 def train_stage2_yolo(
@@ -113,14 +255,42 @@ def train_stage2_yolo(
     batch_size: int = 8,
     imgsz: int = STAGE2_STUDENT_IMAGE_SIZE,
     max_images: Optional[int] = None,
+    run_ctx: Optional["RunContext"] = None,
+    early_stop_patience: int = 10,
+    use_full_val_final: bool = True,
 ) -> Path:
     try:
         from ultralytics import YOLO
     except ImportError as e:
         raise ImportError("Install ultralytics for Exp 4A: pip install ultralytics") from e
 
+    from modules.wssis.eval_splits import resolve_eval_val_split
+    from modules.wssis.smoke_profile import get_smoke_profile
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    smoke = get_smoke_profile()
+    val_limit = smoke.max_images if smoke else None
+    paths = build_coco_paths()
+
     records, image_root = _build_semi_weak_records(spec, max_images=max_images)
+    val_split = resolve_eval_val_split(full_val=False)
+    val_records = _build_val_records(
+        spec,
+        val_image_txt=val_split["val_image_txt"],
+        val_ann=val_split["val_ann"],
+        image_split=str(val_split["image_split"]),
+        max_images=val_limit,
+    )
+    full_val_records: Optional[List[dict]] = None
+    if use_full_val_final:
+        full_val_records = _build_val_records(
+            spec,
+            val_image_txt=paths["val_all_txt"],
+            val_ann=paths["val_ann"],
+            image_split="val",
+            max_images=val_limit,
+        )
+
     dataset = Stage2YoloDataset(records, image_root)
     loader = DataLoader(
         dataset,
@@ -163,10 +333,20 @@ def train_stage2_yolo(
     step = 0
     ckpt_dir = out_dir / "yolov8_seg" / "weights"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
+    early_stop = EarlyStopping(
+        patience=early_stop_patience,
+        monitor="segm/AP",
+        mode="max",
+    )
+    best_segm_ap = -1.0
+
+    if run_ctx is not None:
+        run_ctx.init_tensorboard()
 
     print(
         f"[stage2-yolo] start: epochs={epochs} batches/epoch={len(loader)} "
-        f"total_steps={total_steps} batch_size={batch_size} imgsz={imgsz}"
+        f"total_steps={total_steps} batch_size={batch_size} imgsz={imgsz} "
+        f"val_images={len(val_records)} early_stop_patience={early_stop_patience}"
     )
     train_t0 = time.perf_counter()
 
@@ -314,22 +494,115 @@ def train_stage2_yolo(
         mean_loss = epoch_loss_sum / max(n_train_steps, 1)
         elapsed_total = time.perf_counter() - train_t0
         eta_s = (elapsed_total / epoch) * (epochs - epoch) if epoch > 0 else 0.0
-        epoch_pbar.set_postfix(loss=f"{mean_loss:.4f}", eta=f"{eta_s / 60:.1f}m")
+
+        val_metrics = evaluate_stage2_yolo_val(
+            student,
+            mask_proj,
+            val_records,
+            imgsz=imgsz,
+            device=device,
+            batch_size=batch_size,
+        )
+        segm_ap = val_metrics["segm/AP"]
+        epoch_pbar.set_postfix(
+            loss=f"{mean_loss:.4f}",
+            segm_AP=f"{segm_ap:.4f}",
+            eta=f"{eta_s / 60:.1f}m",
+        )
         print(
             f"[stage2-yolo] epoch {epoch}/{epochs} "
-            f"mean_loss={mean_loss:.4f} train_steps={n_train_steps} "
-            f"elapsed={epoch_elapsed:.1f}s eta={eta_s / 60:.1f}m"
+            f"mean_loss={mean_loss:.4f} segm/AP={segm_ap:.4f} "
+            f"segm/AP50={val_metrics['segm/AP50']:.4f} "
+            f"val_mask_iou={val_metrics['val_mask_iou']:.4f} "
+            f"train_steps={n_train_steps} elapsed={epoch_elapsed:.1f}s "
+            f"eta={eta_s / 60:.1f}m"
         )
 
-        torch.save(
-            {
-                "model": student.state_dict(),
-                "mask_proj": mask_proj.state_dict(),
-                "epoch": epoch,
-            },
-            ckpt_dir / "last.pt",
+        payload = {
+            "model": student.state_dict(),
+            "mask_proj": mask_proj.state_dict(),
+            "epoch": epoch,
+            "segm/AP": segm_ap,
+            "best_segm_ap": max(best_segm_ap, segm_ap),
+        }
+        torch.save(payload, ckpt_dir / "last.pt")
+
+        is_best = segm_ap > best_segm_ap
+        if is_best:
+            best_segm_ap = segm_ap
+            payload["best_segm_ap"] = best_segm_ap
+            torch.save(payload, ckpt_dir / "best.pt")
+            print(f"[stage2-yolo] new best segm/AP={best_segm_ap:.4f} -> {ckpt_dir / 'best.pt'}")
+
+        metrics_row = {
+            "event": "epoch",
+            "epoch": epoch,
+            "train_loss": mean_loss,
+            "train_steps": n_train_steps,
+            "epoch_time_s": epoch_elapsed,
+            **val_metrics,
+            "val_scope": val_split["scope"],
+            "best_segm_ap": best_segm_ap,
+        }
+        if run_ctx is not None:
+            run_ctx.log_metrics(metrics_row, step=epoch)
+            run_ctx.update_step(
+                f"exp_{spec.id}",
+                {
+                    "status": "running",
+                    "epoch": epoch,
+                    "max_epochs": epochs,
+                    "segm/AP": segm_ap,
+                },
+            )
+
+        if early_stop.patience > 0 and early_stop.step(metrics_row):
+            print(
+                f"[stage2-yolo] EarlyStopping: new best {early_stop.monitor}={early_stop.best:.4f}"
+            )
+        if early_stop.should_stop:
+            print(
+                f"[stage2-yolo] Early stopping at epoch {epoch} "
+                f"(patience={early_stop.patience}, best {early_stop.monitor}={early_stop.best:.4f})"
+            )
+            break
+
+    if use_full_val_final and full_val_records:
+        final_metrics = evaluate_stage2_yolo_val(
+            student,
+            mask_proj,
+            full_val_records,
+            imgsz=imgsz,
+            device=device,
+            batch_size=batch_size,
         )
+        print(
+            f"[stage2-yolo] final full-val eval: segm/AP={final_metrics['segm/AP']:.4f} "
+            f"segm/AP50={final_metrics['segm/AP50']:.4f} "
+            f"n_images={int(final_metrics['n_val_images'])}"
+        )
+        if run_ctx is not None:
+            run_ctx.log_metrics(
+                {
+                    "event": "final_eval",
+                    "val_scope": "full_val",
+                    **final_metrics,
+                },
+                step=epoch,
+            )
 
     meta_path = ckpt_dir / "stage2_yolo_meta.json"
-    meta_path.write_text(json.dumps({"epochs": epochs, "imgsz": imgsz, "spec": spec.id}), encoding="utf-8")
-    return ckpt_dir / "last.pt"
+    meta_path.write_text(
+        json.dumps(
+            {
+                "epochs": epochs,
+                "imgsz": imgsz,
+                "spec": spec.id,
+                "best_segm_ap": best_segm_ap,
+                "early_stop_patience": early_stop_patience,
+            }
+        ),
+        encoding="utf-8",
+    )
+    best_path = ckpt_dir / "best.pt"
+    return best_path if best_path.exists() else ckpt_dir / "last.pt"

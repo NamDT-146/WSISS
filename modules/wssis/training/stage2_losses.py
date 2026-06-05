@@ -181,6 +181,14 @@ def student_feedback_loss(
     teacher_logits = _single_mask_logits(teacher_logits)
     if student_probs.dim() == 3:
         student_probs = student_probs.unsqueeze(1)
+    if teacher_logits.shape[-2:] != student_probs.shape[-2:]:
+        # Teacher runs at mask_size (e.g. 256); student may be at imgsz (e.g. 512).
+        teacher_logits = F.interpolate(
+            teacher_logits,
+            size=student_probs.shape[-2:],
+            mode="bilinear",
+            align_corners=False,
+        )
     high = (student_probs > tau).float()
     target = (student_probs > 0.5).float()
     return partial_bce_loss(teacher_logits, target.detach(), high)
