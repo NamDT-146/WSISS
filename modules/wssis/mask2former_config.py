@@ -56,6 +56,7 @@ def add_wssis_config(cfg: CN) -> None:
     cfg.WSSIS.GNN_CHECKPOINT = ""
     cfg.WSSIS.FREEZE_GNN = False
     cfg.WSSIS.GNN_LR = 1e-5
+    cfg.WSSIS.GNN_WARMUP_ITERS = 200
     cfg.WSSIS.DISTILL_WEIGHT = 1.0
     cfg.WSSIS.LABELED_BATCH_RATIO = 0.5
     cfg.WSSIS.SMOKE = False

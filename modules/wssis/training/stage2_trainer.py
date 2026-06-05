@@ -163,6 +163,10 @@ class WssisStage2TrainerMixin:
         t_pce_sum = None
         t_sym_sum = None
         n_teacher = 0
+        sup_fg_pixels = 0.0
+        sup_total_pixels = 0.0
+        sup_nonempty = 0
+        sup_images = 0
 
         for rec in data:
             is_labeled = rec.get("wssis_is_labeled", True)
@@ -236,7 +240,15 @@ class WssisStage2TrainerMixin:
             n_teacher += 1
 
             sam_probs = refined_probs_from_logits(sam3)
-            pseudo_vote, _ = voting_pseudo_mask(sam_probs, threshold=thresh, vote_min=vote_min)
+            # Batch-adaptive (e.g. AdaMatch) cutoff instead of a fixed global threshold:
+            # scales with the confidence actually present in this image's SAM outputs.
+            if teacher.threshold_policy is not None:
+                eff_thresh = float(
+                    teacher.threshold_policy.effective_threshold(sam3, update=True)
+                )
+            else:
+                eff_thresh = thresh
+            pseudo_vote, _ = voting_pseudo_mask(sam_probs, threshold=eff_thresh, vote_min=vote_min)
 
             pseudo_np = []
             for j in range(pseudo_vote.shape[0]):
@@ -244,11 +256,34 @@ class WssisStage2TrainerMixin:
                 if pm.shape != (h_s, w_s):
                     pm = apply_geom_transform_to_mask(pm, dual.geom)
                 pseudo_np.append(pm)
+                sup_fg_pixels += float(pm.sum())
+                sup_total_pixels += float(pm.size)
+                sup_nonempty += int(pm.any())
+                sup_images += 1
 
             rec["instances"] = _masks_to_instances(pseudo_np, cats, (h_s, w_s), device)
             rec["wssis_weak_signal"] = weak_signal
             rec["wssis_weak_signal_type"] = weak_sig
             rec["wssis_refined_logits"] = refined
+
+        if sup_total_pixels > 0:
+            try:
+                from detectron2.utils.events import get_event_storage
+
+                storage = get_event_storage()
+                # Fraction of pixels labeled as foreground by the pseudo-mask voting
+                # (i.e. how much supervision the student actually receives on weak images).
+                storage.put_scalar(
+                    "wssis/sup_ratio", sup_fg_pixels / sup_total_pixels, smoothing_hint=False
+                )
+                if sup_images > 0:
+                    storage.put_scalar(
+                        "wssis/sup_nonempty_frac",
+                        sup_nonempty / sup_images,
+                        smoothing_hint=False,
+                    )
+            except Exception:
+                pass
 
         teacher_losses: Dict[str, torch.Tensor] = {}
         if n_teacher > 0 and t_pce_sum is not None and t_sym_sum is not None:

@@ -53,6 +53,8 @@ def _pseudo_label_settings_for_ckpt(gnn_ckpt: Path) -> tuple[str, float]:
 # Base Mask2Former config uses IMS_PER_BATCH=16 / BASE_LR=0.0001; 4x batch, LR scaled linearly.
 STAGE2_IMS_PER_BATCH = 64
 STAGE2_BASE_LR = 0.0001
+# Reference batch size of the base recipe (BASE_LR is defined at this batch size).
+STAGE2_BASE_IMS_PER_BATCH = 16
 STAGE2_ITERS_PER_EPOCH = 150
 STAGE2_EARLY_STOP_PATIENCE = 10
 
@@ -194,6 +196,13 @@ def _mask2former_train(spec: ExperimentSpec, out_dir: Path, dry_run: bool = Fals
         )
         ims_batch = aligned_ims
 
+    # Base Mask2Former recipe is bs16 @ STAGE2_BASE_LR; scale LR linearly with the actual batch.
+    scaled_lr = STAGE2_BASE_LR * (ims_batch / float(STAGE2_BASE_IMS_PER_BATCH))
+    print(
+        f"[stage2] BASE_LR {STAGE2_BASE_LR} -> {scaled_lr:.2e} "
+        f"(linear scaling for IMS_PER_BATCH={ims_batch}, ref bs{STAGE2_BASE_IMS_PER_BATCH})"
+    )
+
     generated = out_dir / "mask2former_override.yaml"
     split_txt = _split_file_for_spec(spec)
     train_ds, val_ds = (
@@ -201,7 +210,8 @@ def _mask2former_train(spec: ExperimentSpec, out_dir: Path, dry_run: bool = Fals
         f"wssis_val_{spec.id}",
     )
     gnn_ckpt = gnn_checkpoint(spec.gnn_checkpoint)
-    pseudo_mode, pseudo_conf_thresh = _pseudo_label_settings_for_ckpt(gnn_ckpt)
+    # Threshold mode is forced to batch-adaptive (adamatch) below; only the cutoff is reused.
+    _pseudo_mode, pseudo_conf_thresh = _pseudo_label_settings_for_ckpt(gnn_ckpt)
     generated.write_text(
         f"""# Auto-generated for experiment {spec.id}
 _BASE_: "{base_yaml.as_posix()}"
@@ -226,7 +236,8 @@ WSSIS:
   FREEZE_GNN: {str(spec.freeze_gnn).lower()}
   WEAK_SIGNAL: "{spec.weak_signal}"
   GNN_CHECKPOINT: "{gnn_ckpt.as_posix()}"
-  PSEUDO_THRESHOLD_MODE: "{pseudo_mode}"
+  GNN_WARMUP_ITERS: 200
+  PSEUDO_THRESHOLD_MODE: "adamatch"
   PSEUDO_CONFIDENCE_THRESHOLD: {pseudo_conf_thresh}
   USE_FULL_VAL_FINAL: {str(use_full_val).lower()}
   ITERS_PER_EPOCH: {STAGE2_ITERS_PER_EPOCH}
@@ -250,7 +261,7 @@ SOLVER:
   MAX_ITER: {max_iter}
   STEPS: ({lr_steps[0]}, {lr_steps[1]})
   IMS_PER_BATCH: {ims_batch}
-  BASE_LR: {STAGE2_BASE_LR}
+  BASE_LR: {scaled_lr}
 """,
         encoding="utf-8",
     )

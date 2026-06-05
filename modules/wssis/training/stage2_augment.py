@@ -151,9 +151,15 @@ def build_weak_geom(image_rgb: np.ndarray, out_size: int = STAGE2_STUDENT_IMAGE_
 def build_dual_views(
     image_rgb: np.ndarray,
     out_size: int = STAGE2_STUDENT_IMAGE_SIZE,
-    strong_aug: bool = True,
+    strong_aug: bool = False,
 ) -> DualViewResult:
-    """Weak geom view for teacher; strong = weak + RandAugment (no color) + normalize."""
+    """Weak geom view for teacher; student view = same geom (+ optional RandAugment) + normalize.
+
+    RandAugment is disabled by default: its rotate/shear/translate ops are NOT applied to the
+    pseudo-GT masks (only the crop+flip ``geom`` is), so enabling it misaligns the student image
+    from its supervision. Simple geometry-only augmentation (random crop + hflip) stays consistent
+    between image and masks.
+    """
     weak_np, geom = build_weak_geom(image_rgb, out_size)
     strong_np = _randaugment_no_color(weak_np, n_ops=3, magnitude=7) if strong_aug else weak_np.copy()
 

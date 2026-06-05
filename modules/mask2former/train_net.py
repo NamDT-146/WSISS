@@ -361,9 +361,12 @@ class Trainer(WssisStage2TrainerMixin, DefaultTrainer):
             and not getattr(wssis, "FREEZE_GNN", False)
         ):
             gnn_lr = float(getattr(wssis, "GNN_LR", 1e-5))
+            self._wssis_gnn_base_lr = gnn_lr
+            self._wssis_gnn_warmup_iters = int(getattr(wssis, "GNN_WARMUP_ITERS", 200))
+            # Start at lr=0 so the (noisy) GNN does not yank the student early in training.
             self._wssis_teacher_opt = torch.optim.AdamW(
                 self._wssis_teacher.gnn.parameters(),
-                lr=gnn_lr,
+                lr=0.0 if self._wssis_gnn_warmup_iters > 0 else gnn_lr,
             )
 
     def _run_step_joint(self) -> None:
@@ -411,7 +414,24 @@ class Trainer(WssisStage2TrainerMixin, DefaultTrainer):
         inner._write_metrics(loss_dict, data_time)
         self.optimizer.step()
         if self._wssis_teacher_opt is not None:
+            self._wssis_apply_gnn_warmup()
             self._wssis_teacher_opt.step()
+
+    def _wssis_apply_gnn_warmup(self) -> None:
+        """Linearly ramp the GNN optimizer LR from 0 to its base value over the first iters."""
+        base_lr = getattr(self, "_wssis_gnn_base_lr", None)
+        if base_lr is None:
+            return
+        warmup = getattr(self, "_wssis_gnn_warmup_iters", 0)
+        if warmup > 0:
+            lr = base_lr * min(1.0, (self.iter + 1) / float(warmup))
+        else:
+            lr = base_lr
+        for group in self._wssis_teacher_opt.param_groups:
+            group["lr"] = lr
+        storage = getattr(self, "storage", None)
+        if storage is not None:
+            storage.put_scalar("wssis/gnn_lr", lr, smoothing_hint=False)
 
     def run_step(self):
         """Joint teacher-student step or default Mask2Former step."""
