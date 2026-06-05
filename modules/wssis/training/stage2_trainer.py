@@ -19,6 +19,8 @@ from modules.wssis.pseudo_label_confidence import refined_probs_from_logits
 from modules.wssis.training.stage2_augment import apply_geom_transform_to_mask, build_dual_views
 from modules.wssis.training.stage2_losses import (
     LossWeightSchedule,
+    aggregate_refined_logits_per_image,
+    aggregate_weak_signal_per_image,
     build_pce_valid_mask,
     partial_bce_loss,
     partial_dice_loss,
@@ -248,19 +250,20 @@ class WssisStage2TrainerMixin:
             pm = _best_query_mask(pred_masks[i], tgt)
             probs = pm.sigmoid()
             weak_sig = rec.get("wssis_weak_signal_type", "points_only")
-            valid_pce, target_pce = build_pce_valid_mask(weak_signal, weak_sig)
+            valid_pce, target_pce = aggregate_weak_signal_per_image(weak_signal, weak_sig)
             vm = valid_pce.to(pm.device)
             if vm.shape[-2:] != pm.shape[-2:]:
                 vm = F.interpolate(vm, size=pm.shape[-2:], mode="nearest")
                 target_pce = F.interpolate(target_pce, size=pm.shape[-2:], mode="nearest")
-            l_semi = partial_bce_loss(pm.unsqueeze(0).unsqueeze(0), target_pce, vm)
-            l_semi_d = partial_dice_loss(pm.unsqueeze(0).unsqueeze(0), target_pce, vm)
+            pm_b = pm.unsqueeze(0).unsqueeze(0)
+            l_semi = partial_bce_loss(pm_b, target_pce, vm)
+            l_semi_d = partial_dice_loss(pm_b, target_pce, vm)
             semi_sum = (l_semi + l_semi_d) if semi_sum is None else semi_sum + (l_semi + l_semi_d)
 
             refined = rec.get("wssis_refined_logits")
             if refined is not None and weights["lambda_t_feedback"] > 0:
                 fb = student_feedback_loss(
-                    refined[0:1],
+                    aggregate_refined_logits_per_image(refined),
                     probs.unsqueeze(0).unsqueeze(0),
                     tau=fb_tau,
                 )

@@ -103,6 +103,38 @@ def build_pce_valid_mask(
     return valid, target
 
 
+def aggregate_weak_signal_per_image(
+    weak_signal: torch.Tensor,
+    signal_type: str,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Collapse per-instance weak maps [N,1,H,W] to per-image [1,1,H,W] for student semi-loss.
+    """
+    if weak_signal.dim() == 3:
+        weak_signal = weak_signal.unsqueeze(0)
+    if weak_signal.shape[0] == 1:
+        return build_pce_valid_mask(weak_signal, signal_type)
+
+    sig = signal_type.replace("_only", "")
+    if sig in ("box", "boxes"):
+        inside = (
+            (weak_signal[:, 1:2] > 0.5).float()
+            if weak_signal.shape[1] >= 2
+            else (weak_signal > 0.5).float()
+        )
+        union_inside = inside.max(dim=0, keepdim=True)[0]
+        valid = 1.0 - union_inside
+        return valid, torch.zeros_like(valid)
+
+    agg = weak_signal.max(dim=0, keepdim=True)[0]
+    return build_pce_valid_mask(agg, signal_type)
+
+
+def aggregate_refined_logits_per_image(refined: torch.Tensor) -> torch.Tensor:
+    """Mean per-instance refined logits -> [1,1,H,W] for student feedback."""
+    return _single_mask_logits(refined).mean(dim=0, keepdim=True)
+
+
 def symmetric_sam_triplet_loss(masks_3: torch.Tensor) -> torch.Tensor:
     """Pairwise symmetric Dice on 3 SAM/GNN heads [B,3,H,W] or [3,H,W]."""
     if masks_3.dim() == 3:

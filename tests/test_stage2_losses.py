@@ -4,6 +4,7 @@ import torch
 
 from modules.wssis.training.stage2_losses import (
     LossWeightSchedule,
+    aggregate_weak_signal_per_image,
     build_pce_valid_mask,
     partial_bce_loss,
     symmetric_sam_triplet_loss,
@@ -45,6 +46,19 @@ def test_loss_schedule_warmup():
     assert w0["lambda_s_unsup"] == 0.0
     w_end = sched.weights(100, 100)
     assert w_end["lambda_s_unsup"] > 0.0
+
+
+def test_aggregate_weak_signal_multi_instance():
+    """Per-instance [N,1,H,W] -> per-image [1,1,H,W] for YOLO semi-loss."""
+    weak = torch.zeros(2, 1, 8, 8)
+    weak[0, 0, 2, 2] = 1.0
+    weak[1, 0, 5, 5] = 1.0
+    valid, target = aggregate_weak_signal_per_image(weak, "points_only")
+    assert valid.shape == (1, 1, 8, 8)
+    assert valid[0, 0, 2, 2] == 1.0
+    assert valid[0, 0, 5, 5] == 1.0
+    bce = partial_bce_loss(torch.zeros(1, 1, 8, 8), target, valid)
+    assert bce.ndim == 0
 
 
 def test_partial_bce_three_channel_logits():

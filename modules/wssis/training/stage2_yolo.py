@@ -26,6 +26,8 @@ from modules.wssis.training.stage2_augment import apply_geom_transform_to_mask, 
 from modules.wssis.training.stage2_yolo_proto import yolo_mask_logits as _yolo_mask_logits
 from modules.wssis.training.stage2_losses import (
     LossWeightSchedule,
+    aggregate_refined_logits_per_image,
+    aggregate_weak_signal_per_image,
     build_pce_valid_mask,
     partial_bce_loss,
     partial_dice_loss,
@@ -167,6 +169,7 @@ def train_stage2_yolo(
             t_pce, t_sym, t_fb, s_semi = [], [], [], []
 
             images_s = []
+            processed_recs = []
             for rec in batch_recs:
                 file_name = rec.get("file_name")
                 if not file_name:
@@ -174,7 +177,6 @@ def train_stage2_yolo(
                 image_rgb = utils.read_image(file_name, format="RGB")
                 dual = build_dual_views(image_rgb, out_size=imgsz)
                 is_labeled = rec.get("wssis_is_labeled", True)
-                images_s.append(dual.image_strong)
 
                 if not is_labeled:
                     anns = rec.get("wssis_teacher_anns") or rec.get("annotations") or []
@@ -224,27 +226,31 @@ def train_stage2_yolo(
                     mask_np_list, _, _ = coco_anns_to_masks_for_image(
                         anns, image_rgb.shape[0], image_rgb.shape[1], max_objects=8
                     )
+                    if not mask_np_list:
+                        continue
                     warped = [apply_geom_transform_to_mask(m, dual.geom) for m in mask_np_list]
                     rec["_target_mask"] = _union_mask(warped, imgsz)
+
+                images_s.append(dual.image_strong)
+                processed_recs.append(rec)
 
             if not images_s:
                 continue
             img_batch = torch.stack(images_s, dim=0).to(device)
             pred = _yolo_mask_logits(student, mask_proj, img_batch, imgsz)
 
-            for i, rec in enumerate(batch_recs):
-                if "_target_mask" not in rec:
-                    continue
+            for i, rec in enumerate(processed_recs):
                 tgt = torch.from_numpy(rec["_target_mask"]).to(device).unsqueeze(0).unsqueeze(0)
                 if pred.shape[-2:] != tgt.shape[-2:]:
                     tgt = F.interpolate(tgt, size=pred.shape[-2:], mode="nearest")
-                pm = pred[i : i + 1] if pred.shape[0] > i else pred[0:1]
+                pm = pred[i : i + 1]
                 loss_total = loss_total + partial_bce_loss(pm, tgt, torch.ones_like(tgt))
                 loss_total = loss_total + partial_dice_loss(pm, tgt, torch.ones_like(tgt))
 
                 if not rec.get("wssis_is_labeled", True) and "_weak_signal" in rec:
-                    ws = rec["_weak_signal"]
-                    valid_pce, target_pce = build_pce_valid_mask(ws, rec["_weak_sig_type"])
+                    valid_pce, target_pce = aggregate_weak_signal_per_image(
+                        rec["_weak_signal"], rec["_weak_sig_type"]
+                    )
                     vm = valid_pce.to(pm.device)
                     if vm.shape[-2:] != pm.shape[-2:]:
                         vm = F.interpolate(vm, size=pm.shape[-2:], mode="nearest")
@@ -253,7 +259,7 @@ def train_stage2_yolo(
                     if weights["lambda_t_feedback"] > 0 and "_refined" in rec:
                         t_fb.append(
                             student_feedback_loss(
-                                rec["_refined"][0:1],
+                                aggregate_refined_logits_per_image(rec["_refined"]),
                                 pm.sigmoid(),
                                 tau=0.95,
                             )
