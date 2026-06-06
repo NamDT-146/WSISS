@@ -83,6 +83,10 @@ def swin_tiny_checkpoint() -> Path:
     return checkpoints_dir() / "swin_tiny_patch4_window7_224.pkl"
 
 
+def mit_b0_checkpoint() -> Path:
+    return checkpoints_dir() / "mit_b0_pretrained.pkl"
+
+
 def experiment_output_dir(exp_id: str) -> Path:
     d = outputs_dir() / "experiments" / exp_id
     d.mkdir(parents=True, exist_ok=True)

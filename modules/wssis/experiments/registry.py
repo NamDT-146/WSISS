@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Literal
 
 StudentType = Literal["mask2former", "yolov8"]
+StudentBackbone = Literal["swin_t", "mit_b0"]
 SignalType = Literal["none", "mixed", "per_image", "boxes_only", "points_only", "scribbles_only"]
 
 # Archived IDs (ablations / old baselines) — kept for backward-compatible lookups
@@ -22,6 +23,7 @@ class ExperimentSpec:
     student: StudentType
     labeled_split: str  # none | labeled_5pct | train_all
     weak_split: str  # none | weak_95pct
+    student_backbone: StudentBackbone = "swin_t"
     use_gnn: bool = False
     use_raw_sam_only: bool = False
     use_distillation: bool = False
@@ -94,6 +96,34 @@ EXPERIMENTS: Dict[str, ExperimentSpec] = {
         use_stage2_joint_loss=True,
         notes="Same joint Stage-2 loss loop as 1C with YOLOv8-seg student.",
     ),
+    "5A": ExperimentSpec(
+        id="5A",
+        name="MiT-B0 — 5% fully supervised lower bound",
+        phase="R6",
+        student="mask2former",
+        student_backbone="mit_b0",
+        labeled_split="labeled_5pct",
+        weak_split="none",
+        use_gnn=False,
+        use_distillation=False,
+        weak_signal="none",
+        use_semi_weak=False,
+        notes="Same settings as 1A; Mask2Former with SegFormer MiT-B0 backbone.",
+    ),
+    "5D": ExperimentSpec(
+        id="5D",
+        name="MiT-B0 — 100% fully supervised upper bound",
+        phase="R6",
+        student="mask2former",
+        student_backbone="mit_b0",
+        labeled_split="train_all",
+        weak_split="none",
+        use_gnn=False,
+        use_distillation=False,
+        weak_signal="none",
+        use_semi_weak=False,
+        notes="Same settings as 1D; Mask2Former with SegFormer MiT-B0 backbone.",
+    ),
 }
 
 # Backward compatibility: resolve archived IDs if referenced
@@ -110,6 +140,7 @@ _ARCHIVED_SPECS: Dict[str, ExperimentSpec] = {
 }
 
 DEFAULT_RUN_ORDER: List[str] = ["1A", "1C", "4A"]
+MIT_B0_BOUND_ORDER: List[str] = ["5A", "5D"]
 
 
 def get_experiment(exp_id: str) -> ExperimentSpec:

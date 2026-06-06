@@ -21,6 +21,7 @@ from modules.wssis.paths import (
     build_coco_paths,
     experiment_output_dir,
     gnn_checkpoint,
+    mit_b0_checkpoint,
     repo_root,
     resolve_experiment_train_image_txt,
     swin_tiny_checkpoint,
@@ -89,6 +90,7 @@ def _write_experiment_config(spec: ExperimentSpec, out_dir: Path, ctx: Optional[
         "experiment_id": spec.id,
         "name": spec.name,
         "student": spec.student,
+        "student_backbone": spec.student_backbone,
         "labeled_split": spec.labeled_split,
         "weak_split": spec.weak_split,
         "use_gnn": spec.use_gnn,
@@ -128,7 +130,23 @@ def _check_mask2former_ops() -> None:
         ) from e
 
 
-def _mask2former_base_config(m2f_root: Path) -> Path:
+def _mask2former_base_config(m2f_root: Path, backbone: str) -> Path:
+    if backbone == "mit_b0":
+        preferred = (
+            m2f_root
+            / "configs"
+            / "coco"
+            / "instance-segmentation"
+            / "mit"
+            / "maskformer2_mit_b0_bs16_50ep.yaml"
+        )
+        if preferred.exists():
+            return preferred
+        raise FileNotFoundError(
+            "Mask2Former MiT-B0 COCO instance config not found. "
+            f"Expected {preferred}"
+        )
+
     preferred = (
         m2f_root
         / "configs"
@@ -149,9 +167,20 @@ def _mask2former_base_config(m2f_root: Path) -> Path:
     )
 
 
-def _check_swin_weights() -> Path:
-    ckpt = swin_tiny_checkpoint()
+def _student_backbone_weights_path(backbone: str) -> Path:
+    if backbone == "mit_b0":
+        return mit_b0_checkpoint()
+    return swin_tiny_checkpoint()
+
+
+def _check_student_backbone_weights(backbone: str) -> Path:
+    ckpt = _student_backbone_weights_path(backbone)
     if not ckpt.exists():
+        if backbone == "mit_b0":
+            raise FileNotFoundError(
+                f"Missing MiT-B0 backbone weights: {ckpt}\n"
+                "Run: bash scripts/setup/05_download_mit_b0_weights.sh"
+            )
         raise FileNotFoundError(
             f"Missing Swin-T backbone weights: {ckpt}\n"
             "Run: bash scripts/setup/04_download_swin_weights.sh"
@@ -167,8 +196,9 @@ def _mask2former_train(spec: ExperimentSpec, out_dir: Path, dry_run: bool = Fals
     if not train_net.exists():
         raise FileNotFoundError(f"Mask2Former not found at {train_net}")
 
-    base_yaml = _mask2former_base_config(m2f_root)
-    swin_weights = swin_tiny_checkpoint()
+    backbone = spec.student_backbone
+    base_yaml = _mask2former_base_config(m2f_root, backbone)
+    backbone_weights = _student_backbone_weights_path(backbone)
     max_iter = spec.stage2_epochs * STAGE2_ITERS_PER_EPOCH
     eval_period = STAGE2_ITERS_PER_EPOCH
     lr_steps = (int(max_iter * 0.7), int(max_iter * 0.9))
@@ -200,7 +230,7 @@ def _mask2former_train(spec: ExperimentSpec, out_dir: Path, dry_run: bool = Fals
     linear_lr = STAGE2_BASE_LR * (ims_batch / float(STAGE2_BASE_IMS_PER_BATCH))
     scaled_lr = min(linear_lr, STAGE2_REF_LR)
     print(
-        f"[stage2] BASE_LR {STAGE2_BASE_LR} -> {scaled_lr:.2e} "
+        f"[stage2] backbone={backbone} BASE_LR {STAGE2_BASE_LR} -> {scaled_lr:.2e} "
         f"(linear={linear_lr:.2e}, cap={STAGE2_REF_LR:.2e}, IMS_PER_BATCH={ims_batch})"
     )
 
@@ -250,7 +280,7 @@ DATASETS:
   TRAIN: ("{train_ds}",)
   TEST: ("{val_ds}",)
 MODEL:
-  WEIGHTS: "{swin_weights.as_posix()}"
+  WEIGHTS: "{backbone_weights.as_posix()}"
 OUTPUT_DIR: "{(out_dir / 'mask2former').as_posix()}"
 TEST:
   EVAL_PERIOD: {eval_period}
@@ -293,7 +323,7 @@ SOLVER:
     print(" ".join(cmd))
     if dry_run:
         return
-    _check_swin_weights()
+    _check_student_backbone_weights(backbone)
     _check_mask2former_ops()
     result = run_subprocess(cmd, cwd=str(m2f_root), env=env)
     if result != 0:

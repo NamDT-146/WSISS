@@ -23,7 +23,12 @@ def main(argv: list[str] | None = None) -> None:
 
     from tqdm import tqdm
 
-    from modules.wssis.experiments.registry import DEFAULT_RUN_ORDER, EXPERIMENTS, get_experiment
+    from modules.wssis.experiments.registry import (
+        DEFAULT_RUN_ORDER,
+        EXPERIMENTS,
+        MIT_B0_BOUND_ORDER,
+        get_experiment,
+    )
     from modules.wssis.prep import run_p0
     from modules.wssis.run_context import RunContext
     from modules.wssis.training.stage2 import evaluate_experiment, train_experiment
@@ -101,6 +106,8 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.exp.lower() == "all":
         ids = DEFAULT_RUN_ORDER
+    elif args.exp.lower() in ("mit_bounds", "mit_b0_bounds", "5a5d"):
+        ids = MIT_B0_BOUND_ORDER
     else:
         ids = [args.exp.upper().replace("EXP", "")]
 

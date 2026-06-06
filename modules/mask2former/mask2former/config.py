@@ -89,6 +89,12 @@ def add_maskformer2_config(cfg):
     cfg.MODEL.SWIN.OUT_FEATURES = ["res2", "res3", "res4", "res5"]
     cfg.MODEL.SWIN.USE_CHECKPOINT = False
 
+    # SegFormer MiT backbone (mit_b0 …)
+    cfg.MODEL.MIT = CN()
+    cfg.MODEL.MIT.VARIANT = "mit_b0"
+    cfg.MODEL.MIT.DROP_PATH_RATE = 0.1
+    cfg.MODEL.MIT.OUT_FEATURES = ["res2", "res3", "res4", "res5"]
+
     # NOTE: maskformer2 extra configs
     # transformer module
     cfg.MODEL.MASK_FORMER.TRANSFORMER_DECODER_NAME = "MultiScaleMaskedTransformerDecoder"
