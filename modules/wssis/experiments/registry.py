@@ -110,6 +110,23 @@ EXPERIMENTS: Dict[str, ExperimentSpec] = {
         use_semi_weak=False,
         notes="Same settings as 1A; Mask2Former with SegFormer MiT-B0 backbone.",
     ),
+    "5C": ExperimentSpec(
+        id="5C",
+        name="MiT-B0 — True semi-weak SWSIS (main)",
+        phase="R6",
+        student="mask2former",
+        student_backbone="mit_b0",
+        labeled_split="labeled_5pct",
+        weak_split="weak_95pct",
+        use_gnn=True,
+        use_distillation=False,
+        use_symmetric_loss=False,
+        weak_signal="per_image",
+        use_semi_weak=True,
+        freeze_gnn=False,
+        use_stage2_joint_loss=True,
+        notes="Same settings as 1C; Mask2Former with SegFormer MiT-B0 backbone.",
+    ),
     "5D": ExperimentSpec(
         id="5D",
         name="MiT-B0 — 100% fully supervised upper bound",
@@ -140,7 +157,7 @@ _ARCHIVED_SPECS: Dict[str, ExperimentSpec] = {
 }
 
 DEFAULT_RUN_ORDER: List[str] = ["1A", "1C", "4A"]
-MIT_B0_BOUND_ORDER: List[str] = ["5A", "5D"]
+MIT_B0_BOUND_ORDER: List[str] = ["5A", "5C", "5D"]
 
 
 def get_experiment(exp_id: str) -> ExperimentSpec:

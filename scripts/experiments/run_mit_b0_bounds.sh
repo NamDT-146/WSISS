@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Train MiT-B0 supervised bounds: 5A (5% lower) + 5D (100% upper).
-# Same Stage-2 recipe as 1A/1D; only the student backbone changes.
+# Train MiT-B0 experiments: 5A (5% lower), 5C (semi-weak main), 5D (100% upper).
+# Same Stage-2 recipe as 1A/1C/1D; only the student backbone changes.
 #
 # Usage:
 #   bash scripts/experiments/run_mit_b0_bounds.sh --run-id mit_b0_bounds
@@ -42,13 +42,13 @@ RUN_FLAGS=(--exp mit_bounds --stage train --continue-on-error)
 [[ -n "$RUN_ID" ]] && RUN_FLAGS+=(--run-id "$RUN_ID")
 [[ -n "$RESUME" ]] && RUN_FLAGS+=($RESUME)
 
-echo "========== MiT-B0 bounds: 5A (5%% GT) + 5D (100%% GT) =========="
+echo "========== MiT-B0: 5A (5%% GT) + 5C (semi-weak) + 5D (100%% GT) =========="
 python -u -m modules.wssis.run_experiment "${RUN_FLAGS[@]}" "${EXTRA[@]}" || {
   echo "WARNING: One or more MiT-B0 bound experiments failed"
 }
 
 if $WITH_EVAL; then
-  echo "========== Eval 5A + 5D =========="
+  echo "========== Eval 5A + 5C + 5D =========="
   EVAL_ARGS=(--exp mit_bounds --stage eval --continue-on-error)
   [[ -n "$RUN_ID" ]] && EVAL_ARGS+=(--run-id "$RUN_ID")
   [[ -n "$RESUME" ]] && EVAL_ARGS+=($RESUME)
