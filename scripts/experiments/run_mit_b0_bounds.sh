@@ -2,10 +2,10 @@
 # Train MiT-B0 experiments: 5A (5% lower), 5C (semi-weak main), 5D (100% upper).
 # Same Stage-2 recipe as 1A/1C/1D; only the student backbone changes.
 #
-# Usage:
-#   bash scripts/experiments/run_mit_b0_bounds.sh --run-id mit_b0_bounds
-#   bash scripts/experiments/run_mit_b0_bounds.sh --run-id mit_b0_bounds --resume
-#   bash scripts/experiments/run_mit_b0_bounds.sh --run-id mit_b0_bounds --with-eval
+# Usage (respects WSSIS_RUN_ID, e.g. export WSSIS_RUN_ID=wssis_v2):
+#   bash scripts/experiments/run_mit_b0_bounds.sh
+#   bash scripts/experiments/run_mit_b0_bounds.sh --run-id wssis_v2 --resume
+#   bash scripts/experiments/run_mit_b0_bounds.sh --with-eval
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -23,7 +23,7 @@ if [[ ! -f "$REPO_ROOT/checkpoints/mit_b0_pretrained.pkl" ]]; then
   bash scripts/setup/05_download_mit_b0_weights.sh
 fi
 
-RUN_ID="${WSSIS_RUN_ID:-mit_b0_bounds}"
+RUN_ID="${WSSIS_RUN_ID:-wssis_main}"
 RESUME=""
 WITH_EVAL=false
 EXTRA=()
@@ -37,6 +37,8 @@ while [[ $# -gt 0 ]]; do
     *) EXTRA+=("$1"); shift ;;
   esac
 done
+
+echo "Using run-id: ${RUN_ID} (WSSIS_RUN_ID or --run-id)"
 
 RUN_FLAGS=(--exp mit_bounds --stage train --continue-on-error)
 [[ -n "$RUN_ID" ]] && RUN_FLAGS+=(--run-id "$RUN_ID")
